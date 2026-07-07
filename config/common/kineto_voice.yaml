@@ -1,0 +1,169 @@
+substitutions:
+  # Phases of the Kineto voice satellite.
+  # Mirrors common/voice_assistant.yaml so the (no-HA) LED ring scripts keep working unchanged.
+  # The voice satellite is ready to be triggered by a wake word
+  voice_assist_idle_phase_id: '1'
+  # The voice satellite is streaming audio to the Kineto backend
+  voice_assist_waiting_for_command_phase_id: '2'
+  # The voice satellite is listening for a voice command
+  voice_assist_listening_for_command_phase_id: '3'
+  # The voice satellite is waiting for the backend to process the command
+  voice_assist_thinking_phase_id: '4'
+  # The voice satellite is replying to the command
+  voice_assist_replying_phase_id: '5'
+  # The voice satellite is not ready (no backend connection)
+  voice_assist_not_ready_phase_id: '10'
+  # The voice satellite encountered an error
+  voice_assist_error_phase_id: '11'
+
+  # Kineto backend endpoint. Override these in the top-level config / at install time.
+  kineto_ws_url: wss://kineto.invalid/api/voice/ws
+  kineto_device_id: satellite1-dev
+  kineto_auth_token: dev-token
+
+globals:
+  # Global variable tracking the phase of the voice satellite (kept name-compatible with
+  # the voice_assistant package so the LED scripts can be reused).
+  - id: voice_assistant_phase
+    type: int
+    restore_value: no
+    initial_value: ${voice_assist_not_ready_phase_id}
+
+microphone:
+  - platform: satellite1
+    id: sat1_mics
+    sample_rate: 48000
+    i2s_din_pin: GPIO15
+    bits_per_sample: 32bit
+    channel: stereo
+    pdm: false
+    adc_type: external
+    i2s_audio_id: i2s_shared
+
+micro_wake_word:
+  id: mww
+  models:
+    - model: https://fph-firmware-assets.s3.us-east-1.amazonaws.com/wake-word/hey_jarvis.json
+      id: hey_jarvis
+    - model: https://fph-firmware-assets.s3.us-east-1.amazonaws.com/wake-word/okay_nabu.json
+      id: okay_nabu
+    - model: https://fph-firmware-assets.s3.us-east-1.amazonaws.com/wake-word/stop.json
+      id: stop
+      internal: true
+  vad:
+  microphone:
+    microphone: sat1_mics
+    channels: 1
+    gain_factor: 6
+  stop_after_detection: false
+  on_wake_word_detected:
+    # If the wake word is detected when the device is muted (Possible with the software mute switch): Do nothing
+    - if:
+        condition:
+          switch.is_off: master_mute_switch
+        then:
+          # If a timer is ringing: Stop it, do not start a listening session (the "stop" model lands here too)
+          - if:
+              condition:
+                switch.is_on: timer_ringing
+              then:
+                - switch.turn_off: timer_ringing
+              # Stop the current Kineto listening session if one is running
+              else:
+                - if:
+                    condition:
+                      lambda: return id(kv).is_listening();
+                    then:
+                      - kineto_voice.stop:
+                    # Stop any other media player announcement
+                    else:
+                      - if:
+                          condition:
+                            media_player.is_announcing:
+                              id: external_media_player
+                          then:
+                            - media_player.stop:
+                                announcement: true
+                                id: external_media_player
+                          # Start a Kineto listening session and play the wake sound, if enabled
+                          else:
+                            - if:
+                                condition:
+                                  switch.is_on: wake_sound
+                                then:
+                                  - script.execute:
+                                      id: play_sound
+                                      priority: true
+                                      sound_file: "wake_word_triggered_sound"
+                                  - delay: 300ms
+                            - kineto_voice.start:
+                                wake_word: !lambda return wake_word;
+
+kineto_voice:
+  id: kv
+  microphone: sat1_mics
+  media_player: external_media_player
+  url: ${kineto_ws_url}
+  device_id: ${kineto_device_id}
+  auth_token: ${kineto_auth_token}
+
+  on_connected:
+    - lambda: id(init_in_progress) = false;
+    - micro_wake_word.start:
+    - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
+    - script.execute: control_leds
+
+  on_disconnected:
+    - lambda: id(voice_assistant_phase) = ${voice_assist_not_ready_phase_id};
+    - script.execute: control_leds
+
+  # Duck media while a listening session is running (as voice_assistant did on_start).
+  on_listening_start:
+    - mixer_speaker.apply_ducking:
+        id: media_mixing_input
+        decibel_reduction: 20
+        duration: 0.0s
+    - lambda: id(voice_assistant_phase) = ${voice_assist_waiting_for_command_phase_id};
+    - script.execute: control_leds
+
+  on_listening_stop:
+    - mixer_speaker.apply_ducking:
+        id: media_mixing_input
+        decibel_reduction: 0
+        duration: 1.0s
+    - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
+    - script.execute: control_leds
+
+  # The backend can request an LED state ({"type": "led", "state": "..."}).
+  # TODO(T4): map the state strings onto the voice_assistant_leds effects.
+  on_set_led:
+    - logger.log:
+        format: "Kineto backend requested LED state: %s"
+        args: ['state.c_str()']
+
+select:
+  - platform: template
+    id: mww_sensitivity_select
+    name: "Wake word sensitivity"
+    optimistic: true
+    initial_option: Slightly sensitive
+    restore_value: true
+    entity_category: config
+    options:
+      - Slightly sensitive
+      - Moderately sensitive
+      - Very sensitive
+    on_value:
+      # Sets specific wake word probabilities computed for each particular model
+      # Note probability cutoffs are set as a quantized uint8 value, each comment has the corresponding floating point cutoff
+      lambda: |-
+        if (x == "Slightly sensitive") {
+          id(okay_nabu).set_probability_cutoff(217);    // 0.85 -> 0.000 FAPH on DipCo (Manifest's default)
+          id(hey_jarvis).set_probability_cutoff(247);   // 0.97 -> 0.563 FAPH on DipCo (Manifest's default)
+        } else if (x == "Moderately sensitive") {
+          id(okay_nabu).set_probability_cutoff(176);    // 0.69 -> 0.376 FAPH on DipCo
+          id(hey_jarvis).set_probability_cutoff(235);   // 0.92 -> 0.939 FAPH on DipCo
+        } else if (x == "Very sensitive") {
+          id(okay_nabu).set_probability_cutoff(143);    // 0.56 -> 0.751 FAPH on DipCo
+          id(hey_jarvis).set_probability_cutoff(212);   // 0.83 -> 1.502 FAPH on DipCo
+        }
