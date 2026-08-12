@@ -8,6 +8,7 @@
 #include "esphome/core/log.h"
 
 #include <BellHTTPServer.h>
+#include <BellLogger.h>
 #include <BellTask.h>
 #include <BellUtils.h>
 #include <CSpotContext.h>
@@ -223,6 +224,11 @@ class CSpotPlayer::Runner : public bell::Task {
 };
 
 void CSpotPlayer::setup() {
+  // bell logs through a global logger pointer that is null until installed — the
+  // first BELL_LOG without this is a LoadProhibited crash (reference targets install
+  // it in main()).
+  bell::setDefaultLogger();
+
   // ESPHome (AFTER_CONNECTION) has Wi-Fi up and the IDF mdns component initialized
   // by now; bell's MDNSService only adds a service record to it.
   this->runner_ = new Runner(this->device_name_, this->http_port_);
