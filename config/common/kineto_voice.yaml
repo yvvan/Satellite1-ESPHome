@@ -105,7 +105,7 @@ kineto_voice:
   media_player: external_media_player
   url: ${kineto_ws_url}
   device_id: ${kineto_device_id}
-  auth_token: ${kineto_auth_token}
+  auth_token: !secret kineto_auth_token
 
   on_connected:
     - lambda: id(init_in_progress) = false;

@@ -18,8 +18,9 @@ substitutions:
   xmos_fw_version: "v1.0.3"
 
   # Kineto backend endpoint + device credentials.
-  # Placeholder defaults so the config validates; override per install.
-  kineto_ws_url: wss://kineto.invalid/api/voice/ws
+  # Dev install: local voice-gateway on the dev machine (Windows host LAN IP,
+  # port-proxied into WSL). Override per install.
+  kineto_ws_url: ws://192.168.178.97:8085/ws/device
   kineto_device_id: satellite1-dev
   kineto_auth_token: dev-token
 
@@ -90,6 +91,8 @@ packages:
   kineto: !include common/kineto_voice.yaml
 
 wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
   on_disconnect:
     - ble.enable:
   on_connect:
@@ -172,6 +175,9 @@ satellite1:
             - lambda: return !id(xflash).match_embedded( id(satellite1_id).xmos_fw_version );
           then:
             - memory_flasher.write_embedded_image:
+      # TEMP (standalone wake-word bring-up test): start mww without waiting for
+      # the gateway connection. Revert to on_connected-only after (2). See kineto_voice.yaml:112.
+      - micro_wake_word.start:
 
 memory_flasher:
   - platform: satellite1
@@ -324,6 +330,11 @@ external_components:
 logger:
   deassert_rts_dtr: true
   hardware_uart: USB_SERIAL_JTAG
-  level: debug
+  level: DEBUG
   logs:
     ltr_als_ps: WARN
+    i2c.idf: WARN
+    wifi: INFO
+    esp-idf: INFO
+    micro_wake_word: DEBUG
+    satellite1: INFO

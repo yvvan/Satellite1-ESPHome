@@ -105,6 +105,10 @@ class CSpotPlayer::Runner : public bell::Task {
  private:
   /** One full session: obtain credentials (NVS or zeroconf), authenticate, pump packets. */
   void run_once_() {
+    // Let the post-connect Wi-Fi/lwip allocation burst settle so the next probes
+    // measure cspot, not the network stack.
+    BELL_SLEEP_MS(5000);
+    log_heap("settled before blob");
     auto blob = std::make_shared<cspot::LoginBlob>(device_name_);
     log_heap("login blob created");
 
