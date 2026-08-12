@@ -164,7 +164,10 @@ class CSpotPlayer::Runner : public bell::Task {
 
     auto ctx = cspot::Context::createFromBlob(blob);
     ESP_LOGI(TAG, "Connecting to Spotify AP...");
-    ctx->session->connectWithRandomAp();
+    if (!ctx->session->connectWithRandomAp()) {
+      ESP_LOGW(TAG, "AP connection failed; retrying shortly");
+      return;
+    }
     auto token = ctx->session->authenticate(blob);
     if (token.empty()) {
       ESP_LOGE(TAG, "Spotify authentication failed");
