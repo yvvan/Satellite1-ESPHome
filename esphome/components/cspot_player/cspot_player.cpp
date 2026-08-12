@@ -19,6 +19,8 @@
 #include <civetweb.h>
 
 #include "esp_heap_caps.h"
+#include "lwip/dns.h"
+#include "lwip/netdb.h"
 #include "nvs.h"
 
 namespace esphome {
@@ -73,6 +75,42 @@ void erase_credentials() {
   nvs_close(handle);
 }
 
+bool can_resolve(const char *host) {
+  struct addrinfo hints = {};
+  hints.ai_family = AF_INET;
+  hints.ai_socktype = SOCK_STREAM;
+  struct addrinfo *result = nullptr;
+  int err = getaddrinfo(host, "443", &hints, &result);
+  if (result != nullptr)
+    freeaddrinfo(result);
+  return err == 0;
+}
+
+/**
+ * The connection layer aborts on failure (exceptions-free build), so never enter it
+ * until DNS provably works. Waits with retries; installs a public fallback resolver
+ * after the second failure (DHCP may have handed us nothing usable).
+ */
+bool wait_for_dns() {
+  const char *probe_host = "apresolve.spotify.com";
+  for (int attempt = 0; attempt < 60; attempt++) {
+    const ip_addr_t *dns0 = dns_getserver(0);
+    if (can_resolve(probe_host))
+      return true;
+    ESP_LOGW(TAG, "DNS resolve of %s failed (attempt %d, DNS0=%s)", probe_host, attempt + 1,
+             dns0 != nullptr ? ipaddr_ntoa(dns0) : "none");
+    if (attempt == 1) {
+      ip_addr_t fallback;
+      IP_ADDR4(&fallback, 1, 1, 1, 1);
+      dns_setserver(0, &fallback);
+      ESP_LOGW(TAG, "Installed fallback DNS 1.1.1.1");
+    }
+    BELL_SLEEP_MS(5000);
+  }
+  ESP_LOGE(TAG, "DNS never became usable; giving up this session round");
+  return false;
+}
+
 void log_heap(const char *when) {
   ESP_LOGI(TAG, "[heap @ %s] internal free=%u largest=%u | psram free=%u", when,
            (unsigned) heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
@@ -120,6 +158,9 @@ class CSpotPlayer::Runner : public bell::Task {
     } else {
       this->run_zeroconf_(blob);  // blocks until the Spotify app hands over credentials
     }
+
+    if (!wait_for_dns())
+      return;
 
     auto ctx = cspot::Context::createFromBlob(blob);
     ESP_LOGI(TAG, "Connecting to Spotify AP...");
