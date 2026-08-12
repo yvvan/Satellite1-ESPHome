@@ -1,0 +1,26 @@
+# Spotify-on-device spike: the full Kineto firmware plus the cspot_player component.
+# Milestone under test: cspot builds, pairs (zeroconf), streams, and coexists with the
+# wake word + voice WSS stack in memory. PCM is discarded (no audio output yet).
+
+substitutions:
+  node_name: satellite1-spotify-spike
+  friendly_name: "Satellite1 Spotify Spike"
+
+packages:
+  kineto: !include kineto.yaml
+
+external_components:
+  - source:
+      type: local
+      path: ../esphome/components
+    components: [cspot_player]
+
+# bell's MDNSService (used for the _spotify-connect zeroconf advert) only adds a
+# service record — the IDF mdns stack must already be initialized, which ESPHome's
+# mdns component does. kineto.yaml doesn't enable it (no HA), so enable it here.
+mdns:
+
+cspot_player:
+  name: "Kinetik Speaker"
+  # Local checkout of the cspot fork (kineto branch); iterated on directly during the spike.
+  cspot_component_path: /mnt/d/code/cspot/esp32-component
