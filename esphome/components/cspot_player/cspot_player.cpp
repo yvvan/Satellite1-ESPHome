@@ -18,6 +18,7 @@
 #include <TrackPlayer.h>
 #include <civetweb.h>
 
+#include "esphome/components/audio/audio.h"
 #include "esp_heap_caps.h"
 #include "lwip/dns.h"
 #include "lwip/netdb.h"
@@ -122,10 +123,11 @@ void log_heap(const char *when) {
 
 class CSpotPlayer::Runner : public bell::Task {
  public:
-  Runner(std::string device_name, uint16_t http_port)
+  Runner(std::string device_name, uint16_t http_port, speaker::Speaker *media_speaker)
       : bell::Task("cspot_runner", 32 * 1024, 0, 1),
         device_name_(std::move(device_name)),
-        http_port_(http_port) {
+        http_port_(http_port),
+        media_speaker_(media_speaker) {
     startTask();
   }
 
@@ -186,7 +188,12 @@ class CSpotPlayer::Runner : public bell::Task {
     auto handler = std::make_shared<cspot::SpircHandler>(ctx);
     handler->subscribeToMercury();
 
-    // Spike sink: count and discard PCM (44.1 kHz s16 stereo). Real audio output is M3.
+    // cspot decodes Ogg Vorbis to 44.1 kHz / 16-bit / stereo PCM and pushes it here. Feed it
+    // into the ESPHome media speaker (a resampler -> mixer -> I2S chain). play() returns the
+    // bytes it accepted; returning that count gives cspot the backpressure it expects (it
+    // sleeps and retries the remainder), so a full ring buffer throttles the decoder instead
+    // of overflowing. A short ticks_to_wait keeps this off the cspot player task for too long.
+    this->ensure_stream_started_();
     handler->getTrackPlayer()->setDataCallback(
         [this](uint8_t *data, size_t bytes, std::string_view track_id) -> size_t {
           this->streamed_bytes_ += bytes;
@@ -195,21 +202,44 @@ class CSpotPlayer::Runner : public bell::Task {
             ESP_LOGI(TAG, "Streaming: %u MB decoded", (unsigned) (this->streamed_bytes_ >> 20));
             log_heap("streaming");
           }
-          return bytes;
+          if (this->media_speaker_ == nullptr)
+            return bytes;
+          this->ensure_stream_started_();
+          return this->media_speaker_->play(data, bytes, pdMS_TO_TICKS(20));
         });
 
-    handler->setEventHandler([](std::unique_ptr<cspot::SpircHandler::Event> event) {
+    auto *self = this;
+    handler->setEventHandler([self, handler](std::unique_ptr<cspot::SpircHandler::Event> event) {
       switch (event->eventType) {
         case cspot::SpircHandler::EventType::TRACK_INFO: {
           auto &info = std::get<cspot::TrackInfo>(event->data);
           ESP_LOGI(TAG, "Track: %s — %s", info.artist.c_str(), info.name.c_str());
           break;
         }
-        case cspot::SpircHandler::EventType::PLAY_PAUSE:
-          ESP_LOGI(TAG, "Play/pause: %s", std::get<bool>(event->data) ? "paused" : "playing");
+        case cspot::SpircHandler::EventType::PLAY_PAUSE: {
+          bool paused = std::get<bool>(event->data);
+          ESP_LOGI(TAG, "Play/pause: %s", paused ? "paused" : "playing");
+          if (self->media_speaker_ != nullptr)
+            self->media_speaker_->set_pause_state(paused);
+          break;
+        }
+        case cspot::SpircHandler::EventType::VOLUME: {
+          int volume = std::get<int>(event->data);  // 0..65535
+          if (self->media_speaker_ != nullptr)
+            self->media_speaker_->set_volume((float) volume / 65535.0f);
+          break;
+        }
+        case cspot::SpircHandler::EventType::FLUSH:
+        case cspot::SpircHandler::EventType::SEEK:
+        case cspot::SpircHandler::EventType::PLAYBACK_START:
+          // Drop buffered audio so the new position starts cleanly.
+          self->restart_stream_();
           break;
         case cspot::SpircHandler::EventType::DISC:
           ESP_LOGI(TAG, "User disconnected the device");
+          if (self->media_speaker_ != nullptr)
+            self->media_speaker_->stop();
+          self->stream_started_ = false;
           break;
         default:
           break;
@@ -219,6 +249,24 @@ class CSpotPlayer::Runner : public bell::Task {
     while (true) {
       ctx->session->handlePacket();
     }
+  }
+
+  /** Start the media speaker with cspot's fixed PCM format, once per playback. */
+  void ensure_stream_started_() {
+    if (media_speaker_ == nullptr || stream_started_)
+      return;
+    // cspot output is always 44.1 kHz, 16-bit, stereo (Spotify Ogg Vorbis).
+    media_speaker_->set_audio_stream_info(audio::AudioStreamInfo(16, 2, 44100));
+    media_speaker_->start();
+    stream_started_ = true;
+  }
+
+  void restart_stream_() {
+    if (media_speaker_ == nullptr)
+      return;
+    media_speaker_->stop();
+    stream_started_ = false;
+    ensure_stream_started_();
   }
 
   /** Advertise on mDNS and run the LAN credential hand-off until the app pairs us. */
@@ -268,6 +316,8 @@ class CSpotPlayer::Runner : public bell::Task {
 
   std::string device_name_;
   uint16_t http_port_;
+  speaker::Speaker *media_speaker_;
+  bool stream_started_{false};
   size_t streamed_bytes_{0};
   size_t last_report_{0};
 };
@@ -280,7 +330,7 @@ void CSpotPlayer::setup() {
 
   // ESPHome (AFTER_CONNECTION) has Wi-Fi up and the IDF mdns component initialized
   // by now; bell's MDNSService only adds a service record to it.
-  this->runner_ = new Runner(this->device_name_, this->http_port_);
+  this->runner_ = new Runner(this->device_name_, this->http_port_, this->media_speaker_);
 }
 
 void CSpotPlayer::dump_config() {

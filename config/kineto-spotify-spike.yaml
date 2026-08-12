@@ -50,3 +50,6 @@ cspot_player:
   name: "Kinetik Speaker"
   # Local checkout of the cspot fork (kineto branch); iterated on directly during the spike.
   cspot_component_path: /mnt/d/code/cspot/idf/cspot
+  # Feed decoded PCM into the media pipeline (resampler -> mixer -> I2S -> DAC),
+  # the same path the stock media_player uses.
+  media_speaker: media_resampling_speaker

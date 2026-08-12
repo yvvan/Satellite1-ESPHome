@@ -4,6 +4,7 @@
 #include <string>
 
 #include "esphome/core/component.h"
+#include "esphome/components/speaker/speaker.h"
 
 namespace esphome {
 namespace cspot_player {
@@ -27,12 +28,14 @@ class CSpotPlayer : public Component {
 
   void set_device_name(const std::string &name) { this->device_name_ = name; }
   void set_http_port(uint16_t port) { this->http_port_ = port; }
+  void set_media_speaker(speaker::Speaker *speaker) { this->media_speaker_ = speaker; }
 
  protected:
   class Runner;
 
   std::string device_name_;
   uint16_t http_port_{8080};
+  speaker::Speaker *media_speaker_{nullptr};
   Runner *runner_{nullptr};
 };
 
