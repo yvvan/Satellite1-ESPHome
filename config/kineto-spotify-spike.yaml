@@ -25,6 +25,12 @@ esp32:
       CONFIG_LWIP_TCP_WND_DEFAULT: "32768"
       CONFIG_LWIP_TCP_SND_BUF_DEFAULT: "32768"
       CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP: "y"
+      # Steady-state internal DRAM sits at ~25KB with only ~16KB contiguous, so
+      # cspot's mid-size allocations (e.g. make_shared<PlaybackState> in the SpircHandler
+      # ctor) fail out of internal and abort. Lower the always-internal threshold so
+      # anything above 2KB is served from the 8MB PSRAM; DMA-only paths keep their own
+      # MALLOC_CAP_DMA requests in internal.
+      CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL: "2048"
 
 external_components:
   - source:
