@@ -106,6 +106,7 @@ class CSpotPlayer::Runner : public bell::Task {
   /** One full session: obtain credentials (NVS or zeroconf), authenticate, pump packets. */
   void run_once_() {
     auto blob = std::make_shared<cspot::LoginBlob>(device_name_);
+    log_heap("login blob created");
 
     std::string stored = load_credentials();
     bool from_zeroconf = stored.empty();
