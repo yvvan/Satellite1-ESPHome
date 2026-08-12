@@ -92,12 +92,10 @@ class CSpotPlayer::Runner : public bell::Task {
 
   void runTask() override {
     log_heap("runner start");
+    // Exceptions-free build: unrecoverable cspot failures abort (reboot); a normal
+    // return here (e.g. stale credentials) falls through to a delayed retry.
     while (true) {
-      try {
-        this->run_once_();
-      } catch (const std::exception &e) {
-        ESP_LOGE(TAG, "cspot session died: %s", e.what());
-      }
+      this->run_once_();
       log_heap("session ended");
       BELL_SLEEP_MS(5000);
     }

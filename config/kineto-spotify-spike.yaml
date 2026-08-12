@@ -9,6 +9,9 @@ substitutions:
 packages:
   kineto: !include kineto.yaml
 
+# The cspot fork is migrated to an exceptions-free build (throw -> log+abort),
+# so the whole firmware keeps the stock -fno-exceptions flags.
+
 external_components:
   - source:
       type: local
@@ -23,4 +26,4 @@ mdns:
 cspot_player:
   name: "Kinetik Speaker"
   # Local checkout of the cspot fork (kineto branch); iterated on directly during the spike.
-  cspot_component_path: /mnt/d/code/cspot/esp32-component
+  cspot_component_path: /mnt/d/code/cspot/idf/cspot

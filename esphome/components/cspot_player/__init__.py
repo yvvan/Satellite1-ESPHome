@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import esp32
@@ -34,3 +36,4 @@ async def to_code(config):
     cg.add(var.set_http_port(config[CONF_PORT]))
 
     esp32.add_idf_component(name="cspot", path=config[CONF_CSPOT_COMPONENT_PATH])
+
