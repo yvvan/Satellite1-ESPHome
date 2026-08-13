@@ -93,6 +93,11 @@ packages:
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
+  # ESPHome's ESP32 default is "light" — the modem dozes between DTIM beacons,
+  # and frames lost while dozing hit ~1s TCP retransmission timeouts. On a
+  # mains-powered speaker streaming audio that showed up as periodic 1-1.5s
+  # playback stalls (and added latency to the voice WSS).
+  power_save_mode: none
   on_disconnect:
     - ble.enable:
   on_connect:
