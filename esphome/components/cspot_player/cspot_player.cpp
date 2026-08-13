@@ -393,7 +393,12 @@ class CSpotPlayer::Runner : public bell::Task {
     ESP_LOGI(TAG, "Waiting for a Spotify link: the project's account, or pick '%s' in the "
                   "Spotify app (same Wi-Fi)",
              blob->getDeviceName().c_str());
+    // Re-ask with a widening gap. A user who never connects Spotify would otherwise be asked
+    // forever; a user who connects it in chat five minutes from now is still picked up without
+    // touching the speaker.
     int waited = 0;
+    int nextAsk = 30;
+    int askGap = 30;
     while (!got_blob) {
       BELL_SLEEP_MS(1000);
       std::string token = this->take_spotify_token();
@@ -401,8 +406,13 @@ class CSpotPlayer::Runner : public bell::Task {
         ESP_LOGI(TAG, "Spotify account arrived from the gateway; skipping app pairing");
         return token;
       }
-      if (++waited % 30 == 0 && this->notify_unlinked_)
-        this->notify_unlinked_();  // Spotify may have been connected in chat meanwhile
+      if (++waited >= nextAsk) {
+        if (this->notify_unlinked_)
+          this->notify_unlinked_();
+        if (askGap < MAX_LINK_ASK_GAP_S)
+          askGap *= 2;
+        nextAsk = waited + askGap;
+      }
     }
     ESP_LOGI(TAG, "Received Spotify credentials via zeroconf");
     return "";
@@ -421,6 +431,7 @@ class CSpotPlayer::Runner : public bell::Task {
   size_t last_report_{0};
   int64_t last_data_cb_us_{0};
   std::mutex handler_mutex_;
+  static constexpr int MAX_LINK_ASK_GAP_S = 600;  // 30s, 1m, 2m, 4m, 8m, then every 10m
   std::mutex token_mutex_;
   std::string pending_token_;
   std::function<void()> notify_unlinked_;
