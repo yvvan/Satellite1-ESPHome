@@ -2,9 +2,8 @@ from pathlib import Path
 
 import esphome.codegen as cg
 import esphome.config_validation as cv
-from esphome import automation
 from esphome.components import esp32, speaker
-from esphome.const import CONF_ID, CONF_NAME, CONF_PORT, CONF_TRIGGER_ID
+from esphome.const import CONF_ID, CONF_NAME, CONF_PORT
 
 CODEOWNERS = ["@yvvan"]
 DEPENDENCIES = ["wifi", "speaker"]
@@ -14,11 +13,6 @@ CONF_MEDIA_SPEAKER = "media_speaker"
 
 cspot_player_ns = cg.esphome_ns.namespace("cspot_player")
 CSpotPlayer = cspot_player_ns.class_("CSpotPlayer", cg.Component)
-SpotifyUnlinkedTrigger = cspot_player_ns.class_(
-    "SpotifyUnlinkedTrigger", automation.Trigger.template()
-)
-
-CONF_ON_SPOTIFY_UNLINKED = "on_spotify_unlinked"
 
 CONFIG_SCHEMA = cv.Schema(
     {
@@ -34,13 +28,6 @@ CONFIG_SCHEMA = cv.Schema(
         # Speaker that receives the decoded 44.1 kHz/16-bit/stereo PCM (a resampler
         # feeding the media mixer input).
         cv.Optional(CONF_MEDIA_SPEAKER): cv.use_id(speaker.Speaker),
-        # Fires while the player has no Spotify credentials: the config asks the gateway for
-        # the project's account, so the speaker never depends on a phone being nearby.
-        cv.Optional(CONF_ON_SPOTIFY_UNLINKED): automation.validate_automation(
-            {
-                cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(SpotifyUnlinkedTrigger),
-            }
-        ),
     }
 ).extend(cv.COMPONENT_SCHEMA)
 
@@ -55,10 +42,6 @@ async def to_code(config):
     if CONF_MEDIA_SPEAKER in config:
         spk = await cg.get_variable(config[CONF_MEDIA_SPEAKER])
         cg.add(var.set_media_speaker(spk))
-
-    for conf in config.get(CONF_ON_SPOTIFY_UNLINKED, []):
-        trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
-        await automation.build_automation(trigger, [], conf)
 
     esp32.add_idf_component(name="cspot", path=config[CONF_CSPOT_COMPONENT_PATH])
 

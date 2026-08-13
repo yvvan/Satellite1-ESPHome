@@ -300,15 +300,6 @@ void KinetoVoice::handle_text_frame_(const std::string &payload) {
       this->auth_token_ = token;
       // Reconnect so the new credential rides the handshake headers.
       this->pending_reauth_ = true;
-    } else if (strcmp(type, "spotify_token") == 0) {
-      const char *access_token = root["accessToken"];
-      if (access_token == nullptr) {
-        ESP_LOGW(TAG, "spotify_token frame without accessToken");
-        return false;
-      }
-      // Never logged: this is the user's Spotify credential in transit.
-      ESP_LOGI(TAG, "Received a Spotify account from the gateway");
-      this->spotify_token_callbacks_.call(std::string(access_token));
     } else if (strcmp(type, "heartbeat") == 0) {
       // Liveness only — receiving it already refreshed the watchdog.
       ESP_LOGV(TAG, "Gateway heartbeat");

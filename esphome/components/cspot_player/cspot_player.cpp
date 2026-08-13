@@ -134,23 +134,6 @@ class CSpotPlayer::Runner : public bell::Task {
     startTask();
   }
 
-  /** Stored under the lock and consumed by the session loop; never persisted. */
-  void offer_spotify_token(const std::string &token) {
-    std::lock_guard<std::mutex> lock(this->token_mutex_);
-    this->pending_token_ = token;
-  }
-
-  std::string take_spotify_token() {
-    std::lock_guard<std::mutex> lock(this->token_mutex_);
-    std::string token = std::move(this->pending_token_);
-    this->pending_token_.clear();
-    return token;
-  }
-
-  void set_unlinked_notifier(std::function<void()> notifier) {
-    this->notify_unlinked_ = std::move(notifier);
-  }
-
   void set_paused(bool paused) {
     auto handler = this->current_handler_();
     if (handler == nullptr) {
@@ -191,19 +174,12 @@ class CSpotPlayer::Runner : public bell::Task {
     log_heap("login blob created");
 
     std::string stored = load_credentials();
-    bool fresh_login = stored.empty();
-    if (!fresh_login) {
+    bool from_zeroconf = stored.empty();
+    if (!from_zeroconf) {
       ESP_LOGI(TAG, "Using stored Spotify credentials for '%s'", device_name_.c_str());
       blob->loadJson(stored);
     } else {
-      // No credentials yet. Two ways in, whichever arrives first: the project's Spotify account
-      // pushed by the gateway (no phone involved), or the classic zeroconf hand-off from the
-      // Spotify app. The token path wins when both are available because it needs no user action.
-      std::string token = this->await_link_(blob);
-      if (!token.empty()) {
-        ESP_LOGI(TAG, "Logging into Spotify with the project's account");
-        blob->loadAccessToken(token);
-      }
+      this->run_zeroconf_(blob);  // blocks until the Spotify app hands over credentials
     }
 
     if (!wait_for_dns())
@@ -223,19 +199,15 @@ class CSpotPlayer::Runner : public bell::Task {
       // would force a needless re-pairing from the phone.
       auto shan_conn = ctx->session->shanConnection();
       bool connection_lost = shan_conn == nullptr || shan_conn->isDisconnected();
-      if (!fresh_login && !connection_lost) {
+      if (!from_zeroconf && !connection_lost) {
         // Stored credentials went stale — drop them so the next round re-pairs.
         erase_credentials();
       }
       return;
     }
-    // A token login only learns the username from the AP's answer; copy it into the context
-    // before anything uses it (the Spirc topic, and the credentials about to be stored).
-    if (ctx->config.username.empty())
-      ctx->config.username = blob->getUserName();
-    ESP_LOGI(TAG, "Spotify authentication OK (user: %s)", ctx->config.username.c_str());
+    ESP_LOGI(TAG, "Spotify authentication OK (user: %s)", blob->getUserName().c_str());
     log_heap("authenticated");
-    if (fresh_login)
+    if (from_zeroconf)
       save_credentials(ctx->getCredentialsJson());
 
     ctx->session->startTask();
@@ -340,25 +312,8 @@ class CSpotPlayer::Runner : public bell::Task {
     ensure_stream_started_();
   }
 
-  /**
-   * Waits for whichever link arrives first while the device has no Spotify credentials: a token
-   * pushed by the gateway (the project's own account — no phone), or the Spotify app handing over
-   * a blob by zeroconf. Returns the token, or an empty string when zeroconf won.
-   *
-   * The gateway is re-asked every 30s: the user may connect Spotify in chat long after the speaker
-   * started waiting, and nothing else would wake it up.
-   */
-  std::string await_link_(std::shared_ptr<cspot::LoginBlob> blob) {
-    std::string token = this->take_spotify_token();
-    if (!token.empty())
-      return token;
-    if (this->notify_unlinked_)
-      this->notify_unlinked_();
-    return this->run_zeroconf_(blob);
-  }
-
   /** Advertise on mDNS and run the LAN credential hand-off until the app pairs us. */
-  std::string run_zeroconf_(std::shared_ptr<cspot::LoginBlob> blob) {
+  void run_zeroconf_(std::shared_ptr<cspot::LoginBlob> blob) {
     std::atomic<bool> got_blob{false};
 
     auto server = std::make_unique<bell::BellHTTPServer>(http_port_);
@@ -394,32 +349,12 @@ class CSpotPlayer::Runner : public bell::Task {
     bell::MDNSService::registerService(blob->getDeviceName(), "_spotify-connect", "_tcp", "",
                                        http_port_,
                                        {{"VERSION", "1.0"}, {"CPath", "/spotify_info"}, {"Stack", "SP"}});
-    ESP_LOGI(TAG, "Waiting for a Spotify link: the project's account, or pick '%s' in the "
-                  "Spotify app (same Wi-Fi)",
+    ESP_LOGI(TAG, "Waiting for pairing: pick '%s' in the Spotify app (same Wi-Fi)",
              blob->getDeviceName().c_str());
-    // Re-ask with a widening gap. A user who never connects Spotify would otherwise be asked
-    // forever; a user who connects it in chat five minutes from now is still picked up without
-    // touching the speaker.
-    int waited = 0;
-    int nextAsk = 30;
-    int askGap = 30;
     while (!got_blob) {
       BELL_SLEEP_MS(1000);
-      std::string token = this->take_spotify_token();
-      if (!token.empty()) {
-        ESP_LOGI(TAG, "Spotify account arrived from the gateway; skipping app pairing");
-        return token;
-      }
-      if (++waited >= nextAsk) {
-        if (this->notify_unlinked_)
-          this->notify_unlinked_();
-        if (askGap < MAX_LINK_ASK_GAP_S)
-          askGap *= 2;
-        nextAsk = waited + askGap;
-      }
     }
     ESP_LOGI(TAG, "Received Spotify credentials via zeroconf");
-    return "";
   }
 
   std::shared_ptr<cspot::SpircHandler> current_handler_() {
@@ -435,10 +370,6 @@ class CSpotPlayer::Runner : public bell::Task {
   size_t last_report_{0};
   int64_t last_data_cb_us_{0};
   std::mutex handler_mutex_;
-  static constexpr int MAX_LINK_ASK_GAP_S = 600;  // 30s, 1m, 2m, 4m, 8m, then every 10m
-  std::mutex token_mutex_;
-  std::string pending_token_;
-  std::function<void()> notify_unlinked_;
   std::shared_ptr<cspot::SpircHandler> active_handler_;
 };
 
@@ -451,7 +382,6 @@ void CSpotPlayer::setup() {
   // ESPHome (AFTER_CONNECTION) has Wi-Fi up and the IDF mdns component initialized
   // by now; bell's MDNSService only adds a service record to it.
   this->runner_ = new Runner(this->device_name_, this->http_port_, this->media_speaker_);
-  this->runner_->set_unlinked_notifier([this]() { this->spotify_unlinked_callbacks_.call(); });
 }
 
 void CSpotPlayer::dump_config() {
@@ -470,13 +400,6 @@ void CSpotPlayer::next_track() {
   if (this->runner_ == nullptr)
     return;
   this->runner_->next_track();
-}
-
-void CSpotPlayer::set_spotify_token(const std::string &access_token) {
-  if (this->runner_ == nullptr || access_token.empty())
-    return;
-  ESP_LOGI(TAG, "Received the project's Spotify account from the gateway");
-  this->runner_->offer_spotify_token(access_token);
 }
 
 }  // namespace cspot_player

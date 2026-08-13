@@ -79,10 +79,6 @@ class KinetoVoice : public Component {
     this->has_media_control_hooks_ = true;
     this->media_resume_callbacks_.add(std::move(callback));
   }
-  /** Delivers the project's Spotify account pushed by the gateway. */
-  void add_on_spotify_token_callback(std::function<void(std::string)> callback) {
-    this->spotify_token_callbacks_.add(std::move(callback));
-  }
   void add_on_media_next_callback(std::function<void()> callback) {
     this->has_media_control_hooks_ = true;
     this->media_next_callbacks_.add(std::move(callback));
@@ -150,7 +146,6 @@ class KinetoVoice : public Component {
   CallbackManager<void()> media_pause_callbacks_;
   CallbackManager<void()> media_resume_callbacks_;
   CallbackManager<void()> media_next_callbacks_;
-  CallbackManager<void(std::string)> spotify_token_callbacks_;
   bool has_media_control_hooks_{false};
 };
 
