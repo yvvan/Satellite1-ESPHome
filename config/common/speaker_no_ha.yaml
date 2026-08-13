@@ -53,7 +53,10 @@ speaker:
         timeout: never
       - id: media_mixing_input
         timeout: never
-        buffer_duration: 100ms
+        # 1s of buffer smooths cspot decode/CDN jitter — the vorbis decoder
+        # competes with wake-word inference + i2s + WiFi, and 100ms underran
+        # (music stuttered for ~1s on random peaks).
+        buffer_duration: 1000ms
 
   # Vritual speakers to resample each pipelines' audio, if necessary, as the mixer speaker requires the same sample rate
   - platform: resampler

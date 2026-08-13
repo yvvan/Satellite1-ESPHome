@@ -193,7 +193,10 @@ class CSpotPlayer::Runner : public bell::Task {
     // bytes it accepted; returning that count gives cspot the backpressure it expects (it
     // sleeps and retries the remainder), so a full ring buffer throttles the decoder instead
     // of overflowing. A short ticks_to_wait keeps this off the cspot player task for too long.
-    this->ensure_stream_started_();
+    //
+    // Do NOT start the media speaker here: cspot authenticates on every boot, and an
+    // idle-but-started media mixer input silences the voice announcement channel (wake-word
+    // replies never play). Start lazily on the first decoded PCM instead (below).
     handler->getTrackPlayer()->setDataCallback(
         [this](uint8_t *data, size_t bytes, std::string_view track_id) -> size_t {
           this->streamed_bytes_ += bytes;

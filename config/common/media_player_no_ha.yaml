@@ -85,6 +85,12 @@ media_player:
       - script.execute: control_leds
     # Apply audio ducking when an announcement starts
     on_announcement:
+      # Force the internal speaker DAC + amplifier on so voice replies are audible.
+      # Without this the announcement streams into i2s but the TAS2780 may be asleep
+      # or the proxy routed to line-out -> silent replies.
+      - logger.log: "voice announcement: activating internal speaker + amp"
+      - dac_proxy.activate_speaker:
+      - script.execute: tas2780_ensure_active
       - mixer_speaker.apply_ducking:
           id: media_mixing_input
           decibel_reduction: 20

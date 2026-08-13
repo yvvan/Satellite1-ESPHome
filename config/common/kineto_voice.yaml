@@ -110,6 +110,10 @@ kineto_voice:
   on_connected:
     - lambda: id(init_in_progress) = false;
     - micro_wake_word.start:
+    # Power up the internal amplifier so voice announcements (TTS replies) are audible.
+    # The boot-time activation is conditional (line-out only), so without this the i2s
+    # speaker streams into a sleeping TAS2780 and replies play silently.
+    - script.execute: activate_internal_speaker
     - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
     - script.execute: control_leds
 
