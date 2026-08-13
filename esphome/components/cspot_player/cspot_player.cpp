@@ -14,12 +14,14 @@
 #include <CSpotContext.h>
 #include <LoginBlob.h>
 #include <MDNSService.h>
+#include <ShannonConnection.h>
 #include <SpircHandler.h>
 #include <TrackPlayer.h>
 #include <civetweb.h>
 
 #include "esphome/components/audio/audio.h"
 #include "esp_heap_caps.h"
+#include "esp_timer.h"
 #include "lwip/dns.h"
 #include "lwip/netdb.h"
 #include "nvs.h"
@@ -173,7 +175,12 @@ class CSpotPlayer::Runner : public bell::Task {
     auto token = ctx->session->authenticate(blob);
     if (token.empty()) {
       ESP_LOGE(TAG, "Spotify authentication failed");
-      if (!from_zeroconf) {
+      // Only a verdict from a live connection means the stored credentials are
+      // stale; a connection lost mid-auth says nothing about them, and erasing
+      // would force a needless re-pairing from the phone.
+      bool connection_lost = ctx->session->shanConn == nullptr ||
+                             ctx->session->shanConn->isDisconnected();
+      if (!from_zeroconf && !connection_lost) {
         // Stored credentials went stale — drop them so the next round re-pairs.
         erase_credentials();
       }
@@ -199,6 +206,16 @@ class CSpotPlayer::Runner : public bell::Task {
     // replies never play). Start lazily on the first decoded PCM instead (below).
     handler->getTrackPlayer()->setDataCallback(
         [this](uint8_t *data, size_t bytes, std::string_view track_id) -> size_t {
+          // Upstream-starvation detector: during playback this callback fires
+          // continuously (backpressure retries every few ms), so a long entry-to-
+          // entry gap means the decoder/CDN side stalled — the audible lags.
+          int64_t now_us = esp_timer_get_time();
+          if (this->last_data_cb_us_ != 0 && now_us - this->last_data_cb_us_ > 250000) {
+            ESP_LOGW(TAG, "PCM gap: %d ms without decoded data",
+                     (int) ((now_us - this->last_data_cb_us_) / 1000));
+            log_heap("pcm gap");
+          }
+          this->last_data_cb_us_ = now_us;
           this->streamed_bytes_ += bytes;
           if (this->streamed_bytes_ - this->last_report_ >= 1024 * 1024) {
             this->last_report_ = this->streamed_bytes_;
@@ -323,6 +340,7 @@ class CSpotPlayer::Runner : public bell::Task {
   bool stream_started_{false};
   size_t streamed_bytes_{0};
   size_t last_report_{0};
+  int64_t last_data_cb_us_{0};
 };
 
 void CSpotPlayer::setup() {
