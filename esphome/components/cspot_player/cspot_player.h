@@ -3,7 +3,11 @@
 #include <cstdint>
 #include <string>
 
+#include <functional>
+
+#include "esphome/core/automation.h"
 #include "esphome/core/component.h"
+#include "esphome/core/helpers.h"
 #include "esphome/components/speaker/speaker.h"
 
 namespace esphome {
@@ -36,6 +40,17 @@ class CSpotPlayer : public Component {
   void set_paused(bool paused);
   void next_track();
 
+  /**
+   * Hands the player the project's Spotify access token (pushed by the gateway). Used once, to log
+   * in and obtain this device's own reusable credentials; never stored and never logged.
+   */
+  void set_spotify_token(const std::string &access_token);
+
+  /** Fires while the player has no Spotify credentials — the wiring asks the gateway for a token. */
+  void add_on_spotify_unlinked_callback(std::function<void()> callback) {
+    this->spotify_unlinked_callbacks_.add(std::move(callback));
+  }
+
  protected:
   class Runner;
 
@@ -43,6 +58,14 @@ class CSpotPlayer : public Component {
   uint16_t http_port_{8080};
   speaker::Speaker *media_speaker_{nullptr};
   Runner *runner_{nullptr};
+  CallbackManager<void()> spotify_unlinked_callbacks_;
+};
+
+class SpotifyUnlinkedTrigger : public Trigger<> {
+ public:
+  explicit SpotifyUnlinkedTrigger(CSpotPlayer *parent) {
+    parent->add_on_spotify_unlinked_callback([this]() { this->trigger(); });
+  }
 };
 
 }  // namespace cspot_player

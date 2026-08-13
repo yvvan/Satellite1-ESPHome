@@ -28,6 +28,7 @@ CONF_ON_SET_LED = "on_set_led"
 CONF_ON_MEDIA_PAUSE = "on_media_pause"
 CONF_ON_MEDIA_RESUME = "on_media_resume"
 CONF_ON_MEDIA_NEXT = "on_media_next"
+CONF_ON_SPOTIFY_TOKEN = "on_spotify_token"
 
 ESP_WEBSOCKET_CLIENT_VERSION = "1.5.0"
 
@@ -65,6 +66,9 @@ MediaResumeTrigger = kineto_voice_ns.class_(
 )
 MediaNextTrigger = kineto_voice_ns.class_(
     "MediaNextTrigger", automation.Trigger.template()
+)
+SpotifyTokenTrigger = kineto_voice_ns.class_(
+    "SpotifyTokenTrigger", automation.Trigger.template(cg.std_string)
 )
 
 
@@ -123,6 +127,11 @@ CONFIG_SCHEMA = cv.Schema(
                 cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(MediaNextTrigger),
             }
         ),
+        cv.Optional(CONF_ON_SPOTIFY_TOKEN): automation.validate_automation(
+            {
+                cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(SpotifyTokenTrigger),
+            }
+        ),
     }
 ).extend(cv.COMPONENT_SCHEMA)
 
@@ -171,6 +180,10 @@ async def to_code(config):
     for conf in config.get(CONF_ON_MEDIA_NEXT, []):
         trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
         await automation.build_automation(trigger, [], conf)
+
+    for conf in config.get(CONF_ON_SPOTIFY_TOKEN, []):
+        trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
+        await automation.build_automation(trigger, [(cg.std_string, "token")], conf)
 
     # WebSocket client comes from the managed ESP-IDF component registry.
     esp32.add_idf_component(

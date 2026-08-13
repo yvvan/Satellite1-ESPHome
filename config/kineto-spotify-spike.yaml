@@ -56,6 +56,10 @@ mdns:
 
 cspot_player:
   id: cspot_music
+  # Ask the gateway for the project's Spotify account instead of waiting for a phone.
+  on_spotify_unlinked:
+    - kineto_voice.send_event:
+        kind: SPOTIFY_UNLINKED
   name: "Kinetik Speaker"
   # Local checkout of the cspot fork (kineto branch); iterated on directly during the spike.
   cspot_component_path: /mnt/d/code/cspot/idf/cspot
@@ -76,3 +80,6 @@ kineto_voice:
     - lambda: id(cspot_music).set_paused(false);
   on_media_next:
     - lambda: id(cspot_music).next_track();
+  # The project's Spotify account, pushed after the player reports it has none.
+  on_spotify_token:
+    - lambda: id(cspot_music).set_spotify_token(token);

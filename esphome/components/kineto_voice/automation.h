@@ -80,6 +80,13 @@ class MediaResumeTrigger : public Trigger<> {
   }
 };
 
+class SpotifyTokenTrigger : public Trigger<std::string> {
+ public:
+  explicit SpotifyTokenTrigger(KinetoVoice *parent) {
+    parent->add_on_spotify_token_callback([this](const std::string &token) { this->trigger(token); });
+  }
+};
+
 class MediaNextTrigger : public Trigger<> {
  public:
   explicit MediaNextTrigger(KinetoVoice *parent) {
