@@ -229,7 +229,11 @@ class CSpotPlayer::Runner : public bell::Task {
       }
       return;
     }
-    ESP_LOGI(TAG, "Spotify authentication OK (user: %s)", blob->getUserName().c_str());
+    // A token login only learns the username from the AP's answer; copy it into the context
+    // before anything uses it (the Spirc topic, and the credentials about to be stored).
+    if (ctx->config.username.empty())
+      ctx->config.username = blob->getUserName();
+    ESP_LOGI(TAG, "Spotify authentication OK (user: %s)", ctx->config.username.c_str());
     log_heap("authenticated");
     if (fresh_login)
       save_credentials(ctx->getCredentialsJson());
