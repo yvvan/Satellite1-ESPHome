@@ -59,6 +59,9 @@ cspot_player:
 # SpircHandler, so the Spotify Connect state stays in sync across devices.
 # Merges into the kineto_voice block that kineto.yaml brings in.
 kineto_voice:
+  # Spike: start UNPAIRED so the device runs the pairing flow (say the password to it).
+  # The paired identity then lives in NVS; clear the NVS `kineto` namespace to unpair again.
+  auth_token: ""
   on_media_pause:
     - lambda: id(cspot_music).set_paused(true);
   on_media_resume:
