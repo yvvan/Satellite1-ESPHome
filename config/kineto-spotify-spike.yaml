@@ -47,9 +47,21 @@ external_components:
 mdns:
 
 cspot_player:
+  id: cspot_music
   name: "Kinetik Speaker"
   # Local checkout of the cspot fork (kineto branch); iterated on directly during the spike.
   cspot_component_path: /mnt/d/code/cspot/idf/cspot
   # Feed decoded PCM into the media pipeline (resampler -> mixer -> I2S -> DAC),
   # the same path the stock media_player uses.
   media_speaker: media_resampling_speaker
+
+# Route the gateway's level-2 media shortcuts (pause/resume/next) into cspot's
+# SpircHandler, so the Spotify Connect state stays in sync across devices.
+# Merges into the kineto_voice block that kineto.yaml brings in.
+kineto_voice:
+  on_media_pause:
+    - lambda: id(cspot_music).set_paused(true);
+  on_media_resume:
+    - lambda: id(cspot_music).set_paused(false);
+  on_media_next:
+    - lambda: id(cspot_music).next_track();

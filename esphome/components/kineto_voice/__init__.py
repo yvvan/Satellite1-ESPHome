@@ -25,6 +25,9 @@ CONF_ON_DISCONNECTED = "on_disconnected"
 CONF_ON_LISTENING_START = "on_listening_start"
 CONF_ON_LISTENING_STOP = "on_listening_stop"
 CONF_ON_SET_LED = "on_set_led"
+CONF_ON_MEDIA_PAUSE = "on_media_pause"
+CONF_ON_MEDIA_RESUME = "on_media_resume"
+CONF_ON_MEDIA_NEXT = "on_media_next"
 
 ESP_WEBSOCKET_CLIENT_VERSION = "1.5.0"
 
@@ -53,6 +56,15 @@ ListeningStopTrigger = kineto_voice_ns.class_(
 )
 SetLedTrigger = kineto_voice_ns.class_(
     "SetLedTrigger", automation.Trigger.template(cg.std_string)
+)
+MediaPauseTrigger = kineto_voice_ns.class_(
+    "MediaPauseTrigger", automation.Trigger.template()
+)
+MediaResumeTrigger = kineto_voice_ns.class_(
+    "MediaResumeTrigger", automation.Trigger.template()
+)
+MediaNextTrigger = kineto_voice_ns.class_(
+    "MediaNextTrigger", automation.Trigger.template()
 )
 
 
@@ -96,6 +108,21 @@ CONFIG_SCHEMA = cv.Schema(
                 cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(SetLedTrigger),
             }
         ),
+        cv.Optional(CONF_ON_MEDIA_PAUSE): automation.validate_automation(
+            {
+                cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(MediaPauseTrigger),
+            }
+        ),
+        cv.Optional(CONF_ON_MEDIA_RESUME): automation.validate_automation(
+            {
+                cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(MediaResumeTrigger),
+            }
+        ),
+        cv.Optional(CONF_ON_MEDIA_NEXT): automation.validate_automation(
+            {
+                cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(MediaNextTrigger),
+            }
+        ),
     }
 ).extend(cv.COMPONENT_SCHEMA)
 
@@ -132,6 +159,18 @@ async def to_code(config):
     for conf in config.get(CONF_ON_SET_LED, []):
         trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
         await automation.build_automation(trigger, [(cg.std_string, "state")], conf)
+
+    for conf in config.get(CONF_ON_MEDIA_PAUSE, []):
+        trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
+        await automation.build_automation(trigger, [], conf)
+
+    for conf in config.get(CONF_ON_MEDIA_RESUME, []):
+        trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
+        await automation.build_automation(trigger, [], conf)
+
+    for conf in config.get(CONF_ON_MEDIA_NEXT, []):
+        trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
+        await automation.build_automation(trigger, [], conf)
 
     # WebSocket client comes from the managed ESP-IDF component registry.
     esp32.add_idf_component(

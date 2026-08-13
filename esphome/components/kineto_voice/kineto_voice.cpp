@@ -220,7 +220,31 @@ void KinetoVoice::handle_text_frame_(const std::string &payload) {
       }
       call.perform();
     } else if (strcmp(type, "stop") == 0) {
+      // Stop whatever is audible: the media_player pipeline (radio/announcement
+      // sources) and, when wired, the shortcut hooks' player (Spotify Connect
+      // has no stop, so its hook pauses).
       this->media_player_->make_call().set_command(media_player::MEDIA_PLAYER_COMMAND_STOP).perform();
+      if (this->has_media_control_hooks_) {
+        this->media_pause_callbacks_.call();
+      }
+    } else if (strcmp(type, "pause") == 0) {
+      if (this->has_media_control_hooks_) {
+        this->media_pause_callbacks_.call();
+      } else {
+        this->media_player_->make_call().set_command(media_player::MEDIA_PLAYER_COMMAND_PAUSE).perform();
+      }
+    } else if (strcmp(type, "resume") == 0) {
+      if (this->has_media_control_hooks_) {
+        this->media_resume_callbacks_.call();
+      } else {
+        this->media_player_->make_call().set_command(media_player::MEDIA_PLAYER_COMMAND_PLAY).perform();
+      }
+    } else if (strcmp(type, "next") == 0) {
+      if (this->has_media_control_hooks_) {
+        this->media_next_callbacks_.call();
+      } else {
+        ESP_LOGW(TAG, "next frame: no media-control hooks configured");
+      }
     } else if (strcmp(type, "volume") == 0) {
       float level = root["level"] | 0.0f;
       this->media_player_->make_call().set_volume(level / 100.0f).perform();

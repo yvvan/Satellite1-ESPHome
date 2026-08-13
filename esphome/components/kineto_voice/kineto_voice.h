@@ -68,6 +68,21 @@ class KinetoVoice : public Component {
   void add_on_set_led_callback(std::function<void(std::string)> callback) {
     this->set_led_callbacks_.add(std::move(callback));
   }
+  // Media-control frames (gateway level-2 shortcuts). When a config wires these
+  // triggers (e.g. to the cspot player), they own the behaviour; otherwise the
+  // frames fall back to pause/play commands on the configured media_player.
+  void add_on_media_pause_callback(std::function<void()> callback) {
+    this->has_media_control_hooks_ = true;
+    this->media_pause_callbacks_.add(std::move(callback));
+  }
+  void add_on_media_resume_callback(std::function<void()> callback) {
+    this->has_media_control_hooks_ = true;
+    this->media_resume_callbacks_.add(std::move(callback));
+  }
+  void add_on_media_next_callback(std::function<void()> callback) {
+    this->has_media_control_hooks_ = true;
+    this->media_next_callbacks_.add(std::move(callback));
+  }
 
  protected:
   /// Initializes and starts the esp_websocket_client (auto-reconnects on its own).
@@ -116,6 +131,10 @@ class KinetoVoice : public Component {
   CallbackManager<void()> listening_start_callbacks_;
   CallbackManager<void()> listening_stop_callbacks_;
   CallbackManager<void(std::string)> set_led_callbacks_;
+  CallbackManager<void()> media_pause_callbacks_;
+  CallbackManager<void()> media_resume_callbacks_;
+  CallbackManager<void()> media_next_callbacks_;
+  bool has_media_control_hooks_{false};
 };
 
 }  // namespace kineto_voice

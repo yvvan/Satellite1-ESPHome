@@ -30,6 +30,12 @@ class CSpotPlayer : public Component {
   void set_http_port(uint16_t port) { this->http_port_ = port; }
   void set_media_speaker(speaker::Speaker *speaker) { this->media_speaker_ = speaker; }
 
+  // External playback control (voice shortcuts). Routed through cspot's
+  // SpircHandler so the Spotify Connect state stays in sync across devices.
+  // No-ops when no Spotify session is active.
+  void set_paused(bool paused);
+  void next_track();
+
  protected:
   class Runner;
 

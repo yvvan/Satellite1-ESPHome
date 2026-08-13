@@ -66,6 +66,27 @@ class SetLedTrigger : public Trigger<std::string> {
   }
 };
 
+class MediaPauseTrigger : public Trigger<> {
+ public:
+  explicit MediaPauseTrigger(KinetoVoice *parent) {
+    parent->add_on_media_pause_callback([this]() { this->trigger(); });
+  }
+};
+
+class MediaResumeTrigger : public Trigger<> {
+ public:
+  explicit MediaResumeTrigger(KinetoVoice *parent) {
+    parent->add_on_media_resume_callback([this]() { this->trigger(); });
+  }
+};
+
+class MediaNextTrigger : public Trigger<> {
+ public:
+  explicit MediaNextTrigger(KinetoVoice *parent) {
+    parent->add_on_media_next_callback([this]() { this->trigger(); });
+  }
+};
+
 }  // namespace kineto_voice
 }  // namespace esphome
 

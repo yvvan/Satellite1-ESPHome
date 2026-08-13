@@ -3,6 +3,7 @@
 #include <atomic>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 
 #include "esphome/core/log.h"
@@ -133,6 +134,24 @@ class CSpotPlayer::Runner : public bell::Task {
     startTask();
   }
 
+  void set_paused(bool paused) {
+    auto handler = this->current_handler_();
+    if (handler == nullptr) {
+      ESP_LOGW(TAG, "No active Spotify session; ignoring %s", paused ? "pause" : "resume");
+      return;
+    }
+    handler->setPause(paused);
+  }
+
+  void next_track() {
+    auto handler = this->current_handler_();
+    if (handler == nullptr) {
+      ESP_LOGW(TAG, "No active Spotify session; ignoring next");
+      return;
+    }
+    handler->nextSong();
+  }
+
   void runTask() override {
     log_heap("runner start");
     // Exceptions-free build: unrecoverable cspot failures abort (reboot); a normal
@@ -178,8 +197,8 @@ class CSpotPlayer::Runner : public bell::Task {
       // Only a verdict from a live connection means the stored credentials are
       // stale; a connection lost mid-auth says nothing about them, and erasing
       // would force a needless re-pairing from the phone.
-      bool connection_lost = ctx->session->shanConn == nullptr ||
-                             ctx->session->shanConn->isDisconnected();
+      auto shan_conn = ctx->session->shanConnection();
+      bool connection_lost = shan_conn == nullptr || shan_conn->isDisconnected();
       if (!from_zeroconf && !connection_lost) {
         // Stored credentials went stale — drop them so the next round re-pairs.
         erase_credentials();
@@ -194,6 +213,10 @@ class CSpotPlayer::Runner : public bell::Task {
     ctx->session->startTask();
     auto handler = std::make_shared<cspot::SpircHandler>(ctx);
     handler->subscribeToMercury();
+    {
+      std::lock_guard<std::mutex> lock(this->handler_mutex_);
+      this->active_handler_ = handler;
+    }
 
     // cspot decodes Ogg Vorbis to 44.1 kHz / 16-bit / stereo PCM and pushes it here. Feed it
     // into the ESPHome media speaker (a resampler -> mixer -> I2S chain). play() returns the
@@ -334,6 +357,11 @@ class CSpotPlayer::Runner : public bell::Task {
     ESP_LOGI(TAG, "Received Spotify credentials via zeroconf");
   }
 
+  std::shared_ptr<cspot::SpircHandler> current_handler_() {
+    std::lock_guard<std::mutex> lock(this->handler_mutex_);
+    return this->active_handler_;
+  }
+
   std::string device_name_;
   uint16_t http_port_;
   speaker::Speaker *media_speaker_;
@@ -341,6 +369,8 @@ class CSpotPlayer::Runner : public bell::Task {
   size_t streamed_bytes_{0};
   size_t last_report_{0};
   int64_t last_data_cb_us_{0};
+  std::mutex handler_mutex_;
+  std::shared_ptr<cspot::SpircHandler> active_handler_;
 };
 
 void CSpotPlayer::setup() {
@@ -358,6 +388,18 @@ void CSpotPlayer::dump_config() {
   ESP_LOGCONFIG(TAG, "CSpot player:");
   ESP_LOGCONFIG(TAG, "  Device name: %s", this->device_name_.c_str());
   ESP_LOGCONFIG(TAG, "  Zeroconf HTTP port: %u", this->http_port_);
+}
+
+void CSpotPlayer::set_paused(bool paused) {
+  if (this->runner_ == nullptr)
+    return;
+  this->runner_->set_paused(paused);
+}
+
+void CSpotPlayer::next_track() {
+  if (this->runner_ == nullptr)
+    return;
+  this->runner_->next_track();
 }
 
 }  // namespace cspot_player
