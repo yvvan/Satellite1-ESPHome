@@ -87,8 +87,12 @@ class KinetoVoice : public Component {
  protected:
   /// Initializes and starts the esp_websocket_client (auto-reconnects on its own).
   void connect_client_();
-  /// Tears the client down and starts a fresh one (used by the liveness watchdog).
-  void restart_client_();
+  /// Tears the client down and starts a fresh one (liveness watchdog, or a fresh credential).
+  void restart_client_(const char *reason);
+  /// Reads one string from the kineto NVS namespace; empty when absent.
+  std::string load_stored_identity_(const char *key);
+  /// Persists the identity issued by pairing, so the device comes back paired after a reboot.
+  void store_identity_(const std::string &device_id, const std::string &token);
   /// Serializes a JSON object and sends it as a text frame.
   bool send_json_(const json::json_build_t &func);
   void send_hello_();
@@ -127,6 +131,8 @@ class KinetoVoice : public Component {
   // link is dead even when the socket still looks open (a port-forwarder in the
   // path swallows the close), so the client is restarted.
   std::atomic<uint32_t> last_inbound_ms_{0};
+  /// Set when a set_token frame arrives; loop() reconnects with the new credential.
+  bool pending_reauth_{false};
 
   // Inbound text frames queued by the websocket task, drained by loop().
   Mutex inbound_mutex_;

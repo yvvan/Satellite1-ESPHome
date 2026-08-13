@@ -3,6 +3,8 @@
 #ifdef USE_ESP32
 
 #include <esp_crt_bundle.h>
+#include <nvs.h>
+#include <nvs_flash.h>
 
 #include "esphome/core/application.h"
 #include "esphome/core/log.h"
@@ -25,6 +27,9 @@ static const int WS_NETWORK_TIMEOUT_MS = 10000;
 static const int WS_PING_INTERVAL_SEC = 10;
 static const int WS_PINGPONG_TIMEOUT_SEC = 20;
 static const uint32_t WS_LIVENESS_TIMEOUT_MS = 45000;  // 4+ missed gateway heartbeats
+constexpr const char *NVS_NAMESPACE = "kineto";
+constexpr const char *NVS_KEY_DEVICE_ID = "device_id";
+constexpr const char *NVS_KEY_TOKEN = "auth_token";
 static const int WS_SEND_TIMEOUT_TICKS = pdMS_TO_TICKS(2000);
 
 void KinetoVoice::setup() {
@@ -45,6 +50,18 @@ void KinetoVoice::setup() {
     ESP_LOGE(TAG, "Failed to create audio streaming task");
     this->mark_failed();
     return;
+  }
+
+  // A paired device carries a backend-issued identity in NVS; the yaml values are the dev
+  // fallback for a speaker that was flashed with a token by hand.
+  std::string stored_device_id = load_stored_identity_(NVS_KEY_DEVICE_ID);
+  std::string stored_token = load_stored_identity_(NVS_KEY_TOKEN);
+  if (!stored_device_id.empty() && !stored_token.empty()) {
+    ESP_LOGI(TAG, "Using paired identity from NVS (device %s)", stored_device_id.c_str());
+    this->device_id_ = stored_device_id;
+    this->auth_token_ = stored_token;
+  } else if (this->auth_token_.empty()) {
+    ESP_LOGI(TAG, "No device token: connecting in pairing mode");
   }
 
   this->connect_client_();
@@ -80,10 +97,45 @@ void KinetoVoice::connect_client_() {
   esp_websocket_client_start(this->client_);
 }
 
-void KinetoVoice::restart_client_() {
+std::string KinetoVoice::load_stored_identity_(const char *key) {
+  nvs_handle_t handle;
+  if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK)
+    return "";
+  size_t len = 0;
+  if (nvs_get_str(handle, key, nullptr, &len) != ESP_OK || len == 0) {
+    nvs_close(handle);
+    return "";
+  }
+  std::string value(len, '\0');
+  esp_err_t err = nvs_get_str(handle, key, value.data(), &len);
+  nvs_close(handle);
+  if (err != ESP_OK)
+    return "";
+  value.resize(len - 1);  // drop the trailing NUL nvs_get_str includes
+  return value;
+}
+
+void KinetoVoice::store_identity_(const std::string &device_id, const std::string &token) {
+  nvs_handle_t handle;
+  if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK) {
+    ESP_LOGE(TAG, "Cannot open NVS to store the device identity");
+    return;
+  }
+  bool ok = nvs_set_str(handle, NVS_KEY_DEVICE_ID, device_id.c_str()) == ESP_OK &&
+            nvs_set_str(handle, NVS_KEY_TOKEN, token.c_str()) == ESP_OK;
+  if (ok) {
+    nvs_commit(handle);
+    ESP_LOGI(TAG, "Stored paired identity (device %s)", device_id.c_str());
+  } else {
+    ESP_LOGE(TAG, "Failed to store the paired identity");
+  }
+  nvs_close(handle);
+}
+
+void KinetoVoice::restart_client_(const char *reason) {
   if (this->client_ == nullptr)
     return;
-  ESP_LOGW(TAG, "No gateway traffic for %d s; restarting websocket client", WS_LIVENESS_TIMEOUT_MS / 1000);
+  ESP_LOGW(TAG, "Restarting websocket client: %s", reason);
   esp_websocket_client_stop(this->client_);
   esp_websocket_client_destroy(this->client_);
   this->client_ = nullptr;
@@ -95,12 +147,18 @@ void KinetoVoice::loop() {
   // Detect connection edges recorded by the websocket task.
   bool connected = this->ws_connected_.load();
 
+  if (this->pending_reauth_) {
+    this->pending_reauth_ = false;
+    this->restart_client_("paired, reconnecting with the issued identity");
+    return;
+  }
+
   // Liveness watchdog: the gateway heartbeats every 10s while connected.
   if (connected) {
     uint32_t last = this->last_inbound_ms_.load();
     if (last != 0 && millis() - last > WS_LIVENESS_TIMEOUT_MS) {
       this->last_inbound_ms_.store(0);
-      this->restart_client_();
+      this->restart_client_("no gateway heartbeat for 45 s");
       return;
     }
   }
@@ -229,6 +287,19 @@ void KinetoVoice::handle_text_frame_(const std::string &payload) {
       if (this->listening_.load()) {
         this->stop_listening_();
       }
+    } else if (strcmp(type, "set_token") == 0) {
+      const char *device_id = root["deviceId"];
+      const char *token = root["token"];
+      if (device_id == nullptr || token == nullptr) {
+        ESP_LOGW(TAG, "set_token frame without deviceId/token");
+        return false;
+      }
+      ESP_LOGI(TAG, "Paired: got a device identity from the gateway");
+      this->store_identity_(device_id, token);
+      this->device_id_ = device_id;
+      this->auth_token_ = token;
+      // Reconnect so the new credential rides the handshake headers.
+      this->pending_reauth_ = true;
     } else if (strcmp(type, "heartbeat") == 0) {
       // Liveness only — receiving it already refreshed the watchdog.
       ESP_LOGV(TAG, "Gateway heartbeat");
