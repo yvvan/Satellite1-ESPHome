@@ -24,6 +24,7 @@ static const int WS_RECONNECT_TIMEOUT_MS = 5000;  // TODO(T4): exponential backo
 static const int WS_NETWORK_TIMEOUT_MS = 10000;
 static const int WS_PING_INTERVAL_SEC = 10;
 static const int WS_PINGPONG_TIMEOUT_SEC = 20;
+static const uint32_t WS_LIVENESS_TIMEOUT_MS = 45000;  // 4+ missed gateway heartbeats
 static const int WS_SEND_TIMEOUT_TICKS = pdMS_TO_TICKS(2000);
 
 void KinetoVoice::setup() {
@@ -79,9 +80,30 @@ void KinetoVoice::connect_client_() {
   esp_websocket_client_start(this->client_);
 }
 
+void KinetoVoice::restart_client_() {
+  if (this->client_ == nullptr)
+    return;
+  ESP_LOGW(TAG, "No gateway traffic for %d s; restarting websocket client", WS_LIVENESS_TIMEOUT_MS / 1000);
+  esp_websocket_client_stop(this->client_);
+  esp_websocket_client_destroy(this->client_);
+  this->client_ = nullptr;
+  this->ws_connected_.store(false);
+  this->connect_client_();
+}
+
 void KinetoVoice::loop() {
   // Detect connection edges recorded by the websocket task.
   bool connected = this->ws_connected_.load();
+
+  // Liveness watchdog: the gateway heartbeats every 10s while connected.
+  if (connected) {
+    uint32_t last = this->last_inbound_ms_.load();
+    if (last != 0 && millis() - last > WS_LIVENESS_TIMEOUT_MS) {
+      this->last_inbound_ms_.store(0);
+      this->restart_client_();
+      return;
+    }
+  }
   if (connected && !this->was_ws_connected_) {
     this->was_ws_connected_ = true;
     this->send_hello_();
@@ -207,6 +229,9 @@ void KinetoVoice::handle_text_frame_(const std::string &payload) {
       if (this->listening_.load()) {
         this->stop_listening_();
       }
+    } else if (strcmp(type, "heartbeat") == 0) {
+      // Liveness only — receiving it already refreshed the watchdog.
+      ESP_LOGV(TAG, "Gateway heartbeat");
     } else if (strcmp(type, "ack") == 0) {
       // Nothing to do yet.
       ESP_LOGV(TAG, "Backend ack");
@@ -327,6 +352,7 @@ void KinetoVoice::ws_event_handler_(void *handler_args, esp_event_base_t base, i
   switch (event_id) {
     case WEBSOCKET_EVENT_CONNECTED:
       ESP_LOGD(TAG, "WebSocket connected");
+      this_kv->last_inbound_ms_.store(millis());
       this_kv->ws_connected_.store(true);
       break;
     case WEBSOCKET_EVENT_DISCONNECTED:
@@ -346,6 +372,7 @@ void KinetoVoice::ws_event_handler_(void *handler_args, esp_event_base_t base, i
         ESP_LOGW(TAG, "Dropping fragmented text frame (%d bytes)", data->payload_len);
         break;
       }
+      this_kv->last_inbound_ms_.store(millis());
       std::string payload(data->data_ptr, data->data_len);
       {
         LockGuard guard(this_kv->inbound_mutex_);

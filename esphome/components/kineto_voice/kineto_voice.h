@@ -87,6 +87,8 @@ class KinetoVoice : public Component {
  protected:
   /// Initializes and starts the esp_websocket_client (auto-reconnects on its own).
   void connect_client_();
+  /// Tears the client down and starts a fresh one (used by the liveness watchdog).
+  void restart_client_();
   /// Serializes a JSON object and sends it as a text frame.
   bool send_json_(const json::json_build_t &func);
   void send_hello_();
@@ -121,6 +123,10 @@ class KinetoVoice : public Component {
   std::atomic<bool> ws_connected_{false};
   bool was_ws_connected_{false};
   bool hello_acked_{false};
+  // Liveness: the gateway beacons every 10s. Silence past the timeout means the
+  // link is dead even when the socket still looks open (a port-forwarder in the
+  // path swallows the close), so the client is restarted.
+  std::atomic<uint32_t> last_inbound_ms_{0};
 
   // Inbound text frames queued by the websocket task, drained by loop().
   Mutex inbound_mutex_;
