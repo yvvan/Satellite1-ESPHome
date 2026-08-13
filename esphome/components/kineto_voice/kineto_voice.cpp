@@ -22,6 +22,8 @@ static const UBaseType_t STREAM_TASK_PRIORITY = 3;
 
 static const int WS_RECONNECT_TIMEOUT_MS = 5000;  // TODO(T4): exponential backoff on top of this
 static const int WS_NETWORK_TIMEOUT_MS = 10000;
+static const int WS_PING_INTERVAL_SEC = 10;
+static const int WS_PINGPONG_TIMEOUT_SEC = 20;
 static const int WS_SEND_TIMEOUT_TICKS = pdMS_TO_TICKS(2000);
 
 void KinetoVoice::setup() {
@@ -58,6 +60,11 @@ void KinetoVoice::connect_client_() {
   ws_cfg.headers = this->headers_.c_str();
   ws_cfg.reconnect_timeout_ms = WS_RECONNECT_TIMEOUT_MS;
   ws_cfg.network_timeout_ms = WS_NETWORK_TIMEOUT_MS;
+  // TCP alone does not notice a dead gateway: with a port-forwarder in the path
+  // the socket stays half-open and the client waits forever. Protocol-level
+  // ping/pong makes the client drop the connection and reconnect on its own.
+  ws_cfg.ping_interval_sec = WS_PING_INTERVAL_SEC;
+  ws_cfg.pingpong_timeout_sec = WS_PINGPONG_TIMEOUT_SEC;
   ws_cfg.crt_bundle_attach = esp_crt_bundle_attach;
 
   this->client_ = esp_websocket_client_init(&ws_cfg);
