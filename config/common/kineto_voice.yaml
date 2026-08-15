@@ -43,6 +43,17 @@ microphone:
 micro_wake_word:
   id: mww
   models:
+    # Our own model, trained on 50k synthesized samples augmented with room impulses, ambient
+    # noise and music (microWakeWord, 40k steps). Calibration picked cutoff 0.82 / window 3:
+    # 99.36% recall at 0.93 false accepts per hour. `hey_jarvis` stays alongside it for now so
+    # the two can be compared under the same conditions — drop it once the new one wins.
+    - model: ../wake-words/hey_kinetic.json
+      id: hey_kinetic
+      # Overrides the 0.82 the trainer calibrated. That number minimizes false accepts against an
+      # ENGLISH ambient set, and the room this speaker lives in is Russian-speaking: "рулетик"
+      # triggered it, and every false accept measured landed at 0.85-0.89 while a real "Hey
+      # Kinetic" reads 0.97+. Retraining with Russian negatives is the real fix; this is the knob.
+      probability_cutoff: 0.92
     - model: https://fph-firmware-assets.s3.us-east-1.amazonaws.com/wake-word/hey_jarvis.json
       id: hey_jarvis
     - model: https://fph-firmware-assets.s3.us-east-1.amazonaws.com/wake-word/okay_nabu.json
@@ -136,6 +147,18 @@ kineto_voice:
         decibel_reduction: 0
         duration: 1.0s
     - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
+    - script.execute: control_leds
+
+  # A turn the user started could not be delivered: no link at wake time, the link died
+  # mid-sentence, or the gateway never answered the wake frame. Without this the device just
+  # goes quiet, which is indistinguishable from "did not hear you" — so say so out loud and
+  # show the not-ready ring. The reply itself is gone; the user has to ask again.
+  on_turn_failed:
+    - script.execute:
+        id: play_sound
+        priority: true
+        sound_file: "kineto_unreachable_sound"
+    - lambda: id(voice_assistant_phase) = ${voice_assist_not_ready_phase_id};
     - script.execute: control_leds
 
   # The backend can request an LED state ({"type": "led", "state": "..."}).
