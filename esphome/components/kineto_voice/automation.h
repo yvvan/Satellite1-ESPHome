@@ -66,6 +66,13 @@ class SetLedTrigger : public Trigger<std::string> {
   }
 };
 
+class TurnFailedTrigger : public Trigger<> {
+ public:
+  explicit TurnFailedTrigger(KinetoVoice *parent) {
+    parent->add_on_turn_failed_callback([this]() { this->trigger(); });
+  }
+};
+
 class MediaPauseTrigger : public Trigger<> {
  public:
   explicit MediaPauseTrigger(KinetoVoice *parent) {

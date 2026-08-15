@@ -25,6 +25,7 @@ CONF_ON_DISCONNECTED = "on_disconnected"
 CONF_ON_LISTENING_START = "on_listening_start"
 CONF_ON_LISTENING_STOP = "on_listening_stop"
 CONF_ON_SET_LED = "on_set_led"
+CONF_ON_TURN_FAILED = "on_turn_failed"
 CONF_ON_MEDIA_PAUSE = "on_media_pause"
 CONF_ON_MEDIA_RESUME = "on_media_resume"
 CONF_ON_MEDIA_NEXT = "on_media_next"
@@ -56,6 +57,9 @@ ListeningStopTrigger = kineto_voice_ns.class_(
 )
 SetLedTrigger = kineto_voice_ns.class_(
     "SetLedTrigger", automation.Trigger.template(cg.std_string)
+)
+TurnFailedTrigger = kineto_voice_ns.class_(
+    "TurnFailedTrigger", automation.Trigger.template()
 )
 MediaPauseTrigger = kineto_voice_ns.class_(
     "MediaPauseTrigger", automation.Trigger.template()
@@ -106,6 +110,11 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_ON_SET_LED): automation.validate_automation(
             {
                 cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(SetLedTrigger),
+            }
+        ),
+        cv.Optional(CONF_ON_TURN_FAILED): automation.validate_automation(
+            {
+                cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(TurnFailedTrigger),
             }
         ),
         cv.Optional(CONF_ON_MEDIA_PAUSE): automation.validate_automation(
@@ -159,6 +168,10 @@ async def to_code(config):
     for conf in config.get(CONF_ON_SET_LED, []):
         trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
         await automation.build_automation(trigger, [(cg.std_string, "state")], conf)
+
+    for conf in config.get(CONF_ON_TURN_FAILED, []):
+        trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
+        await automation.build_automation(trigger, [], conf)
 
     for conf in config.get(CONF_ON_MEDIA_PAUSE, []):
         trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)

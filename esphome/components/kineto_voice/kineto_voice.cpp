@@ -27,6 +27,9 @@ static const int WS_NETWORK_TIMEOUT_MS = 10000;
 static const int WS_PING_INTERVAL_SEC = 10;
 static const int WS_PINGPONG_TIMEOUT_SEC = 20;
 static const uint32_t WS_LIVENESS_TIMEOUT_MS = 45000;  // 4+ missed gateway heartbeats
+// How long a wake frame may go unanswered before the link counts as dead. The gateway replies
+// within milliseconds on a healthy link; the slack is for a loaded Wi-Fi, not for a broken path.
+static const uint32_t LISTEN_ACK_TIMEOUT_MS = 1500;
 constexpr const char *NVS_NAMESPACE = "kineto";
 constexpr const char *NVS_KEY_DEVICE_ID = "device_id";
 constexpr const char *NVS_KEY_TOKEN = "auth_token";
@@ -162,6 +165,20 @@ void KinetoVoice::loop() {
       return;
     }
   }
+
+  // A wake frame is answered immediately (the gateway sends the listening LED state), so nothing
+  // inbound within the timeout means this socket is one-way dead — a half-open connection the
+  // port-forwarder never closed. Give up on this turn now instead of streaming a whole utterance
+  // into the void and only noticing 45 s later, several lost turns down the line.
+  if (this->listening_.load() && this->listen_started_ms_ != 0 &&
+      millis() - this->listen_started_ms_ > LISTEN_ACK_TIMEOUT_MS &&
+      this->last_inbound_ms_.load() <= this->listen_started_ms_) {
+    ESP_LOGW(TAG, "No gateway response to the wake frame; treating the link as dead");
+    this->stop_listening_();
+    this->turn_failed_callbacks_.call();
+    this->restart_client_("no gateway response to the wake frame");
+    return;
+  }
   if (connected && !this->was_ws_connected_) {
     this->was_ws_connected_ = true;
     this->send_hello_();
@@ -169,7 +186,9 @@ void KinetoVoice::loop() {
     this->was_ws_connected_ = false;
     this->hello_acked_ = false;
     if (this->listening_.load()) {
+      // The user was mid-sentence; that turn is gone with the socket.
       this->stop_listening_();
+      this->turn_failed_callbacks_.call();
     }
     this->disconnected_callbacks_.call();
   }
@@ -227,6 +246,7 @@ void KinetoVoice::start(const std::string &wake_word) {
     return;
   if (!this->ws_connected_.load()) {
     ESP_LOGW(TAG, "Ignoring start: not connected to Kineto backend");
+    this->turn_failed_callbacks_.call();
     return;
   }
   if (this->listening_.load()) {
@@ -242,6 +262,7 @@ void KinetoVoice::start(const std::string &wake_word) {
   });
 
   this->listening_.store(true);
+  this->listen_started_ms_ = millis();
   this->microphone_->start();
   this->listening_start_callbacks_.call();
 }
@@ -256,6 +277,7 @@ void KinetoVoice::stop() {
 
 void KinetoVoice::stop_listening_() {
   this->listening_.store(false);
+  this->listen_started_ms_ = 0;
   this->microphone_->stop();
   this->listening_stop_callbacks_.call();
 }

@@ -68,6 +68,11 @@ class KinetoVoice : public Component {
   void add_on_set_led_callback(std::function<void(std::string)> callback) {
     this->set_led_callbacks_.add(std::move(callback));
   }
+  /// A turn the user started could not be delivered — no link, or the link died mid-listen.
+  /// Wire it to something audible: silence is indistinguishable from "did not hear you".
+  void add_on_turn_failed_callback(std::function<void()> callback) {
+    this->turn_failed_callbacks_.add(std::move(callback));
+  }
   // Media-control frames (gateway level-2 shortcuts). When a config wires these
   // triggers (e.g. to the cspot player), they own the behaviour; otherwise the
   // frames fall back to pause/play commands on the configured media_player.
@@ -133,6 +138,10 @@ class KinetoVoice : public Component {
   std::atomic<uint32_t> last_inbound_ms_{0};
   /// Set when a set_token frame arrives; loop() reconnects with the new credential.
   bool pending_reauth_{false};
+  /// millis() when the current listen window opened, 0 when not listening. The gateway answers a
+  /// wake frame within milliseconds, so silence past ACK_TIMEOUT means the socket is dead in a way
+  /// TCP has not noticed yet — waiting for the 45 s liveness watchdog would eat several turns.
+  uint32_t listen_started_ms_{0};
 
   // Inbound text frames queued by the websocket task, drained by loop().
   Mutex inbound_mutex_;
@@ -143,6 +152,7 @@ class KinetoVoice : public Component {
   CallbackManager<void()> listening_start_callbacks_;
   CallbackManager<void()> listening_stop_callbacks_;
   CallbackManager<void(std::string)> set_led_callbacks_;
+  CallbackManager<void()> turn_failed_callbacks_;
   CallbackManager<void()> media_pause_callbacks_;
   CallbackManager<void()> media_resume_callbacks_;
   CallbackManager<void()> media_next_callbacks_;
