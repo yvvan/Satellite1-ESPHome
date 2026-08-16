@@ -154,6 +154,15 @@ kineto_voice:
   # goes quiet, which is indistinguishable from "did not hear you" — so say so out loud and
   # show the not-ready ring. The reply itself is gone; the user has to ask again.
   on_turn_failed:
+    # This fires while the wake-word chime is still playing. Stopping that announcement and
+    # starting ours in the same tick loses ours — the player is still tearing the first one down,
+    # so the second call is dropped and the device just goes quiet. Let the chime finish first.
+    - wait_until:
+        condition:
+          not:
+            media_player.is_announcing:
+              id: external_media_player
+        timeout: 3s
     - script.execute:
         id: play_sound
         priority: true

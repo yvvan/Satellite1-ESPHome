@@ -35,9 +35,10 @@ audio_file:
     file: ${timer_finished_sound_file}
   - id: wake_word_triggered_sound
     file: ${wake_word_triggered_sound_file}
-  # Spoken locally when a turn cannot reach the gateway — the only moment the device has
-  # something to say without the gateway's TTS, so it ships in flash. FLAC 16 kHz / mono /
-  # 16-bit, the only shape the announcement decoder plays.
+  # Spoken locally when a turn cannot reach the gateway — the only moment the device has something
+  # to say without the gateway's TTS, so it ships in flash. English on purpose: this is a built-in
+  # device phrase, identical for every owner, not the language of whoever happens to be talking to
+  # it. FLAC 16 kHz / mono / 16-bit, the only shape the announcement decoder plays.
   - id: kineto_unreachable_sound
     file: ../sounds/kineto_unreachable.flac
   - id: center_button_press_sound

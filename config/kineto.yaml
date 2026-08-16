@@ -20,7 +20,7 @@ substitutions:
   # Kineto backend endpoint + device credentials.
   # Dev install: local voice-gateway on the dev machine (Windows host LAN IP,
   # port-proxied into WSL). Override per install.
-  kineto_ws_url: ws://192.168.178.97:8085/ws/device
+  kineto_ws_url: ws://192.168.178.142:8085/ws/device
   kineto_device_id: satellite1-dev
   kineto_auth_token: dev-token
 
