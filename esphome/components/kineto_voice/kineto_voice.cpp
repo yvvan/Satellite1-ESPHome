@@ -30,6 +30,10 @@ static const uint32_t WS_LIVENESS_TIMEOUT_MS = 45000;  // 4+ missed gateway hear
 // How long a wake frame may go unanswered before the link counts as dead. The gateway replies
 // within milliseconds on a healthy link; the slack is for a loaded Wi-Fi, not for a broken path.
 static const uint32_t LISTEN_ACK_TIMEOUT_MS = 1500;
+// While the stored identity is being refused, how often to try it again. Generous on purpose:
+// the identity only becomes valid again through something slow (its backend coming back, the
+// device row being restored), and every retry restarts the socket.
+static const uint32_t AUTH_RETRY_INTERVAL_MS = 5 * 60 * 1000;
 constexpr const char *NVS_NAMESPACE = "kineto";
 constexpr const char *NVS_KEY_DEVICE_ID = "device_id";
 constexpr const char *NVS_KEY_TOKEN = "auth_token";
@@ -72,7 +76,9 @@ void KinetoVoice::setup() {
 
 void KinetoVoice::connect_client_() {
   this->headers_ = "X-Device-Id: " + this->device_id_ + "\r\n";
-  if (!this->auth_token_.empty()) {
+  // In pairing fallback the token is deliberately left out of the handshake: no token is what
+  // puts the gateway session into pairing mode. The identity itself is kept for the retry.
+  if (!this->auth_token_.empty() && !this->pairing_fallback_) {
     this->headers_ += "Authorization: Bearer " + this->auth_token_ + "\r\n";
   }
 
@@ -153,6 +159,31 @@ void KinetoVoice::loop() {
   if (this->pending_reauth_) {
     this->pending_reauth_ = false;
     this->restart_client_("paired, reconnecting with the issued identity");
+    return;
+  }
+
+  // The gateway refused the stored identity on the upgrade (401/403: the device row is gone, or
+  // this gateway's backend never issued that token). Keep the identity — the old chat may come
+  // back — but reconnect tokenless so a new pairing password can adopt the device. Only a
+  // successful pairing (set_token) replaces the stored identity; until then it is retried
+  // every AUTH_RETRY_INTERVAL_MS. A gateway whose backend is merely down answers 503, not 401,
+  // so an outage never lands here.
+  int handshake_status = this->last_handshake_status_.exchange(0);
+  if ((handshake_status == 401 || handshake_status == 403) && !this->auth_token_.empty() &&
+      !this->pairing_fallback_) {
+    ESP_LOGW(TAG, "Gateway refused the stored identity (HTTP %d); offering pairing, keeping the identity",
+             handshake_status);
+    this->pairing_fallback_ = true;
+    this->last_auth_retry_ms_ = millis();
+    this->restart_client_("identity refused, connecting in pairing mode");
+    return;
+  }
+  if (this->pairing_fallback_ && !this->listening_.load() &&
+      millis() - this->last_auth_retry_ms_ > AUTH_RETRY_INTERVAL_MS) {
+    // Quietly try the stored identity again; a refusal lands right back in pairing fallback.
+    this->pairing_fallback_ = false;
+    this->last_auth_retry_ms_ = millis();
+    this->restart_client_("retrying the stored identity");
     return;
   }
 
@@ -320,6 +351,8 @@ void KinetoVoice::handle_text_frame_(const std::string &payload) {
       this->store_identity_(device_id, token);
       this->device_id_ = device_id;
       this->auth_token_ = token;
+      // A successful pairing is the one thing that replaces a refused identity.
+      this->pairing_fallback_ = false;
       // Reconnect so the new credential rides the handshake headers.
       this->pending_reauth_ = true;
     } else if (strcmp(type, "heartbeat") == 0) {
@@ -452,6 +485,12 @@ void KinetoVoice::ws_event_handler_(void *handler_args, esp_event_base_t base, i
     case WEBSOCKET_EVENT_ERROR:
       if (this_kv->ws_connected_.load()) {
         ESP_LOGD(TAG, "WebSocket disconnected");
+      }
+      // A failed upgrade carries its HTTP status; loop() reads 401/403 as "identity refused".
+      // The client struct never clears the field, but every acted-on status ends in
+      // restart_client_(), which builds a fresh (zeroed) client — so a stale value cannot recur.
+      if (data != nullptr && data->error_handle.esp_ws_handshake_status_code > 0) {
+        this_kv->last_handshake_status_.store(data->error_handle.esp_ws_handshake_status_code);
       }
       this_kv->ws_connected_.store(false);
       break;

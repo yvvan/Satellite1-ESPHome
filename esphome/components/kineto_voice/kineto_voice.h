@@ -138,6 +138,14 @@ class KinetoVoice : public Component {
   std::atomic<uint32_t> last_inbound_ms_{0};
   /// Set when a set_token frame arrives; loop() reconnects with the new credential.
   bool pending_reauth_{false};
+  /// HTTP status of the last failed WS upgrade, recorded by the websocket task; 0 = none.
+  std::atomic<int> last_handshake_status_{0};
+  /// True while the gateway refuses the stored identity and the client is connected tokenless so
+  /// a new pairing password can adopt the device. The stored identity itself stays untouched —
+  /// only a successful pairing (set_token) replaces it — and is retried periodically in case the
+  /// old chat comes back.
+  bool pairing_fallback_{false};
+  uint32_t last_auth_retry_ms_{0};
   /// millis() when the current listen window opened, 0 when not listening. The gateway answers a
   /// wake frame within milliseconds, so silence past ACK_TIMEOUT means the socket is dead in a way
   /// TCP has not noticed yet — waiting for the 45 s liveness watchdog would eat several turns.
