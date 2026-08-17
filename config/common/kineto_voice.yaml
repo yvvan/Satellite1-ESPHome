@@ -50,13 +50,12 @@ micro_wake_word:
     # loosest threshold in the build (okay_nabu at 0.85) armed against a room playing music.
     - model: ../wake-words/hey_kinetic.json
       id: hey_kinetic
-      # Overrides the 0.82 the trainer calibrated. That number minimizes false accepts against an
-      # ENGLISH ambient set, and the room this speaker lives in is Russian-speaking: "рулетик"
-      # triggered it, and every false accept measured landed at 0.85-0.89 while a real "Hey
-      # Kinetic" reads 0.97+. Retraining with Russian negatives is the real fix; this is the knob.
-      # 0.92 -> 0.95 after a day of daily use: recall stayed fine and the remaining false accepts
-      # sat below the measured 0.97+ of genuine wakes, so the margin is still comfortable.
-      probability_cutoff: 0.95
+      # No cutoff override: the manifest's calibrated 0.80 governs. The previous model needed one
+      # (raised to 0.95) because it answered to anything shaped like "hey <word>" — Russian
+      # "рулетик" at 0.85-0.89, "hey jarvis" and "hey dennis" at 1.00 — and a threshold was the
+      # only knob available. This model was retrained with those phrases as hard negatives and
+      # rejects them on its own: measured over 60 samples each, "hey jarvis" 3%, "hey dennis" 2%,
+      # "hey google" and the Russian set 0%. Raising the threshold now would only cost recall.
     - model: https://fph-firmware-assets.s3.us-east-1.amazonaws.com/wake-word/stop.json
       id: stop
       internal: true
