@@ -1,7 +1,7 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome import automation
-from esphome.components import esp32, media_player, microphone
+from esphome.components import esp32, media_player, microphone, speaker
 from esphome.const import (
     CONF_ID,
     CONF_MEDIA_PLAYER,
@@ -29,6 +29,9 @@ CONF_ON_TURN_FAILED = "on_turn_failed"
 CONF_ON_MEDIA_PAUSE = "on_media_pause"
 CONF_ON_MEDIA_RESUME = "on_media_resume"
 CONF_ON_MEDIA_NEXT = "on_media_next"
+CONF_ON_STREAM_START = "on_stream_start"
+CONF_ON_STREAM_STOP = "on_stream_stop"
+CONF_ANNOUNCEMENT_SPEAKER = "announcement_speaker"
 
 ESP_WEBSOCKET_CLIENT_VERSION = "1.5.0"
 
@@ -70,6 +73,12 @@ MediaResumeTrigger = kineto_voice_ns.class_(
 MediaNextTrigger = kineto_voice_ns.class_(
     "MediaNextTrigger", automation.Trigger.template()
 )
+StreamStartTrigger = kineto_voice_ns.class_(
+    "StreamStartTrigger", automation.Trigger.template()
+)
+StreamStopTrigger = kineto_voice_ns.class_(
+    "StreamStopTrigger", automation.Trigger.template()
+)
 
 
 def _validate_ws_url(value):
@@ -87,6 +96,9 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Required(CONF_URL): _validate_ws_url,
         cv.Required(CONF_DEVICE_ID): cv.string,
         cv.Optional(CONF_AUTH_TOKEN, default=""): cv.string,
+        # Without one the device cannot play a streamed reply and does not advertise that it can,
+        # so the gateway keeps sending it URLs.
+        cv.Optional(CONF_ANNOUNCEMENT_SPEAKER): cv.use_id(speaker.Speaker),
         cv.Optional(CONF_ON_CONNECTED): automation.validate_automation(
             {
                 cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(ConnectedTrigger),
@@ -132,6 +144,16 @@ CONFIG_SCHEMA = cv.Schema(
                 cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(MediaNextTrigger),
             }
         ),
+        cv.Optional(CONF_ON_STREAM_START): automation.validate_automation(
+            {
+                cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(StreamStartTrigger),
+            }
+        ),
+        cv.Optional(CONF_ON_STREAM_STOP): automation.validate_automation(
+            {
+                cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(StreamStopTrigger),
+            }
+        ),
     }
 ).extend(cv.COMPONENT_SCHEMA)
 
@@ -144,6 +166,9 @@ async def to_code(config):
     cg.add(var.set_microphone(mic))
     mp = await cg.get_variable(config[CONF_MEDIA_PLAYER])
     cg.add(var.set_media_player(mp))
+    if CONF_ANNOUNCEMENT_SPEAKER in config:
+        spk = await cg.get_variable(config[CONF_ANNOUNCEMENT_SPEAKER])
+        cg.add(var.set_announcement_speaker(spk))
 
     cg.add(var.set_url(config[CONF_URL]))
     cg.add(var.set_device_id(config[CONF_DEVICE_ID]))
@@ -182,6 +207,14 @@ async def to_code(config):
         await automation.build_automation(trigger, [], conf)
 
     for conf in config.get(CONF_ON_MEDIA_NEXT, []):
+        trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
+        await automation.build_automation(trigger, [], conf)
+
+    for conf in config.get(CONF_ON_STREAM_START, []):
+        trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
+        await automation.build_automation(trigger, [], conf)
+
+    for conf in config.get(CONF_ON_STREAM_STOP, []):
         trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
         await automation.build_automation(trigger, [], conf)
 

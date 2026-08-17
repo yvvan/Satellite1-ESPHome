@@ -18,6 +18,7 @@
 #include "esphome/components/media_player/media_player.h"
 #include "esphome/components/microphone/microphone.h"
 #include "esphome/components/ring_buffer/ring_buffer.h"
+#include "esphome/components/speaker/speaker.h"
 #include "esphome/core/component.h"
 #include "esphome/core/helpers.h"
 
@@ -28,7 +29,14 @@ namespace kineto_voice {
 ///
 /// Maintains a WebSocket connection to the Kineto voice endpoint:
 ///  - outbound: JSON control frames (hello / wake / event) + binary 16-bit 16 kHz mono PCM
-///  - inbound:  JSON control frames (hello_ack / listen_stop / ack / play / stop / volume / led)
+///  - inbound:  JSON control frames (hello_ack / listen_stop / ack / play / stop / volume / led /
+///              stream_start / stream_end) + binary PCM of a spoken reply
+///
+/// A reply arrives one of two ways. As a URL in a `play` frame, which the media_player downloads
+/// and decodes — simple, but nothing is audible until the whole file exists and has been fetched.
+/// Or streamed: `stream_start`, then raw PCM in binary frames straight into the announcement
+/// speaker, so the reply starts playing while the rest of it is still being synthesized. The
+/// device advertises the second in its hello; the gateway picks per device.
 class KinetoVoice : public Component {
  public:
   void setup() override;
@@ -38,6 +46,9 @@ class KinetoVoice : public Component {
 
   void set_microphone(microphone::Microphone *microphone) { this->microphone_ = microphone; }
   void set_media_player(media_player::MediaPlayer *media_player) { this->media_player_ = media_player; }
+  /// Where a streamed reply is played. Without one the device cannot accept streams and does not
+  /// advertise the capability, so the gateway keeps sending it URLs.
+  void set_announcement_speaker(speaker::Speaker *speaker) { this->announcement_speaker_ = speaker; }
   void set_url(const std::string &url) { this->url_ = url; }
   void set_device_id(const std::string &device_id) { this->device_id_ = device_id; }
   void set_auth_token(const std::string &auth_token) { this->auth_token_ = auth_token; }
@@ -88,6 +99,15 @@ class KinetoVoice : public Component {
     this->has_media_control_hooks_ = true;
     this->media_next_callbacks_.add(std::move(callback));
   }
+  /// A streamed reply is about to be audible. Wire the same preparation the media_player does for
+  /// an announcement: wake the amplifier and duck whatever else is playing.
+  void add_on_stream_start_callback(std::function<void()> callback) {
+    this->stream_start_callbacks_.add(std::move(callback));
+  }
+  /// The streamed reply finished playing (or was cut short) — undo the ducking.
+  void add_on_stream_stop_callback(std::function<void()> callback) {
+    this->stream_stop_callbacks_.add(std::move(callback));
+  }
 
  protected:
   /// Initializes and starts the esp_websocket_client (auto-reconnects on its own).
@@ -111,12 +131,20 @@ class KinetoVoice : public Component {
 
   /// FreeRTOS task draining the ring buffer into esp_websocket_client_send_bin().
   static void stream_task(void *params);
+  /// FreeRTOS task draining received PCM into the announcement speaker.
+  static void playback_task(void *params);
+  /// Opens a reply stream in the announced PCM shape. Runs in the main loop.
+  void begin_reply_stream_(int sample_rate, int channels, int bits_per_sample);
+  /// Drops a reply that is no longer wanted (the user spoke again, or the link died).
+  void abort_reply_stream_();
+  bool accepts_audio_stream_() const { return this->announcement_speaker_ != nullptr; }
   /// esp_websocket_client event handler. Runs in the websocket task context, so it only
   /// records state/queues payloads; triggers fire from loop().
   static void ws_event_handler_(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data);
 
   microphone::Microphone *microphone_{nullptr};
   media_player::MediaPlayer *media_player_{nullptr};
+  speaker::Speaker *announcement_speaker_{nullptr};
 
   std::string url_;
   std::string device_id_;
@@ -127,6 +155,25 @@ class KinetoVoice : public Component {
 
   std::unique_ptr<ring_buffer::RingBuffer> ring_buffer_;
   TaskHandle_t stream_task_handle_{nullptr};
+
+  /// Received reply audio, waiting to be played. Sized for several seconds so a Wi-Fi stall does
+  /// not become a gap in the speech; lives in PSRAM (the ring buffer's default preference).
+  std::unique_ptr<ring_buffer::RingBuffer> reply_buffer_;
+  TaskHandle_t playback_task_handle_{nullptr};
+  /// True between stream_start and stream_end: the gateway is still sending this reply. The
+  /// playback task keeps draining after it clears, so the tail is never cut off.
+  std::atomic<bool> reply_streaming_{false};
+  /// Announced PCM shape of the reply currently being received.
+  std::atomic<uint32_t> reply_bytes_per_second_{32000};
+  int reply_sample_rate_{16000};
+  int reply_channels_{1};
+  int reply_bits_per_sample_{16};
+  /// Raised by the playback task when a reply has finished playing, so loop() can fire the stop
+  /// trigger from the main thread, where ESPHome automations belong.
+  std::atomic<bool> reply_finished_{false};
+  /// Asks the playback task to cut the current reply short. Every call into the speaker is left to
+  /// that one task, so silencing it from elsewhere is a request rather than an action.
+  std::atomic<bool> reply_abort_{false};
 
   std::atomic<bool> listening_{false};
   std::atomic<bool> ws_connected_{false};
@@ -164,6 +211,8 @@ class KinetoVoice : public Component {
   CallbackManager<void()> media_pause_callbacks_;
   CallbackManager<void()> media_resume_callbacks_;
   CallbackManager<void()> media_next_callbacks_;
+  CallbackManager<void()> stream_start_callbacks_;
+  CallbackManager<void()> stream_stop_callbacks_;
   bool has_media_control_hooks_{false};
 };
 

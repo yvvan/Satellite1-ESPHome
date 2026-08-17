@@ -22,6 +22,16 @@ static const size_t STREAM_CHUNK_SIZE = 1024;
 static const size_t STREAM_TASK_STACK_SIZE = 4096;
 static const UBaseType_t STREAM_TASK_PRIORITY = 3;
 
+// Inbound reply audio. 256 KB is ~8 s of 16 kHz mono 16-bit speech — far more than the lead the
+// gateway keeps, so a Wi-Fi stall is absorbed rather than heard. It lives in PSRAM.
+static const size_t REPLY_BUFFER_SIZE = 256 * 1024;
+static const size_t PLAYBACK_CHUNK_SIZE = 1024;
+static const size_t PLAYBACK_TASK_STACK_SIZE = 4096;
+static const UBaseType_t PLAYBACK_TASK_PRIORITY = 4;
+// How much audio to hold before the first sample is played. Buys the amplifier time to wake and
+// covers the jitter of the next few frames; the cost is that much added latency, so keep it small.
+static const uint32_t REPLY_PREBUFFER_MS = 300;
+
 static const int WS_RECONNECT_TIMEOUT_MS = 5000;  // TODO(T4): exponential backoff on top of this
 static const int WS_NETWORK_TIMEOUT_MS = 10000;
 static const int WS_PING_INTERVAL_SEC = 10;
@@ -57,6 +67,24 @@ void KinetoVoice::setup() {
     ESP_LOGE(TAG, "Failed to create audio streaming task");
     this->mark_failed();
     return;
+  }
+
+  if (this->accepts_audio_stream_()) {
+    this->reply_buffer_ = ring_buffer::RingBuffer::create(REPLY_BUFFER_SIZE);
+    if (this->reply_buffer_ == nullptr) {
+      // Not fatal: without the buffer the device simply stops advertising the capability and the
+      // gateway keeps sending URLs, which is the path that has always worked.
+      ESP_LOGE(TAG, "Failed to allocate the reply audio buffer; streamed replies disabled");
+      this->announcement_speaker_ = nullptr;
+    } else {
+      xTaskCreate(KinetoVoice::playback_task, "kineto_ws_play", PLAYBACK_TASK_STACK_SIZE, (void *) this,
+                  PLAYBACK_TASK_PRIORITY, &this->playback_task_handle_);
+      if (this->playback_task_handle_ == nullptr) {
+        ESP_LOGE(TAG, "Failed to create the reply playback task; streamed replies disabled");
+        this->reply_buffer_.reset();
+        this->announcement_speaker_ = nullptr;
+      }
+    }
   }
 
   // A paired device carries a backend-issued identity in NVS; the yaml values are the dev
@@ -216,12 +244,20 @@ void KinetoVoice::loop() {
   } else if (!connected && this->was_ws_connected_) {
     this->was_ws_connected_ = false;
     this->hello_acked_ = false;
+    // Whatever was left of a reply died with the socket; the rest of it is never coming.
+    this->abort_reply_stream_();
     if (this->listening_.load()) {
       // The user was mid-sentence; that turn is gone with the socket.
       this->stop_listening_();
       this->turn_failed_callbacks_.call();
     }
     this->disconnected_callbacks_.call();
+  }
+
+  // The playback task cannot run ESPHome automations, so it flags the end of a reply and the
+  // trigger (undoing the ducking) fires here, on the main thread.
+  if (this->reply_finished_.exchange(false)) {
+    this->stream_stop_callbacks_.call();
   }
 
   // Drain inbound text frames queued by the websocket task.
@@ -269,6 +305,9 @@ void KinetoVoice::send_hello_() {
     capabilities.add("audio_in_pcm16");
     capabilities.add("media_player");
     capabilities.add("led_ring");
+    if (this->accepts_audio_stream_()) {
+      capabilities.add("audio_stream_v1");
+    }
   });
 }
 
@@ -286,6 +325,9 @@ void KinetoVoice::start(const std::string &wake_word) {
   }
 
   ESP_LOGD(TAG, "Start listening (wake word: %s)", wake_word.c_str());
+  // The user is talking again, so the previous answer has lost its audience — and leaving it
+  // playing would put the speaker's own voice into the microphone.
+  this->abort_reply_stream_();
   this->ring_buffer_->reset();
   this->send_json_([&wake_word](JsonObject root) {
     root["type"] = "wake";
@@ -377,7 +419,16 @@ void KinetoVoice::handle_text_frame_(const std::string &payload) {
         call.set_volume(root["volume"].as<float>() / 100.0f);
       }
       call.perform();
+    } else if (strcmp(type, "stream_start") == 0) {
+      this->begin_reply_stream_(root["sampleRate"] | 16000, root["channels"] | 1,
+                                root["bitsPerSample"] | 16);
+    } else if (strcmp(type, "stream_end") == 0) {
+      // Only stops the arrival of audio: the playback task keeps draining what is buffered, and
+      // announces the end itself once the speaker has actually run dry.
+      ESP_LOGD(TAG, "Reply stream complete");
+      this->reply_streaming_.store(false);
     } else if (strcmp(type, "stop") == 0) {
+      this->abort_reply_stream_();
       // Stop whatever is audible: the media_player pipeline (radio/announcement
       // sources) and, when wired, the shortcut hooks' player (Spotify Connect
       // has no stop, so its hook pauses).
@@ -420,6 +471,33 @@ void KinetoVoice::handle_text_frame_(const std::string &payload) {
   }
 }
 
+void KinetoVoice::begin_reply_stream_(int sample_rate, int channels, int bits_per_sample) {
+  if (!this->accepts_audio_stream_()) {
+    ESP_LOGW(TAG, "Ignoring stream_start: this device has no speaker wired for streamed replies");
+    return;
+  }
+  ESP_LOGD(TAG, "Reply stream starting (%d Hz, %d ch, %d bit)", sample_rate, channels, bits_per_sample);
+  this->reply_sample_rate_ = sample_rate;
+  this->reply_channels_ = channels;
+  this->reply_bits_per_sample_ = bits_per_sample;
+  this->reply_bytes_per_second_.store((uint32_t) sample_rate * channels * bits_per_sample / 8);
+  this->reply_streaming_.store(true);
+  // Fire before a sample is audible: the amplifier needs waking and the music needs ducking, and
+  // the prebuffer is exactly the room this has to happen in.
+  this->stream_start_callbacks_.call();
+}
+
+void KinetoVoice::abort_reply_stream_() {
+  if (this->reply_buffer_ == nullptr)
+    return;
+  if (!this->reply_streaming_.load() && this->reply_buffer_->available() == 0)
+    return;
+  ESP_LOGD(TAG, "Dropping the reply stream");
+  this->reply_streaming_.store(false);
+  this->reply_buffer_->reset();
+  this->reply_abort_.store(true);
+}
+
 void KinetoVoice::on_mic_data_(const std::vector<uint8_t> &data) {
   if (!this->listening_.load() || !this->ws_connected_.load())
     return;
@@ -448,6 +526,81 @@ void KinetoVoice::on_mic_data_(const std::vector<uint8_t> &data) {
   size_t written = this->ring_buffer_->write(converted.data(), converted.size() * sizeof(int16_t));
   if (written < converted.size() * sizeof(int16_t)) {
     ESP_LOGV(TAG, "Audio ring buffer overflow, oldest samples dropped");
+  }
+}
+
+void KinetoVoice::playback_task(void *params) {
+  KinetoVoice *this_kv = (KinetoVoice *) params;
+  uint8_t chunk[PLAYBACK_CHUNK_SIZE];
+  // Bytes read from the ring but not yet accepted by the speaker. The speaker takes what fits and
+  // reports how much, so the remainder has to be kept and offered again — dropping it would punch
+  // a hole in the speech.
+  size_t pending = 0;
+  size_t pending_offset = 0;
+  bool playing = false;
+
+  while (true) {
+    if (this_kv->reply_abort_.exchange(false)) {
+      pending = 0;
+      pending_offset = 0;
+      if (playing) {
+        this_kv->announcement_speaker_->stop();
+        playing = false;
+        this_kv->reply_finished_.store(true);
+        ESP_LOGD(TAG, "Reply playback cut short");
+      }
+    }
+
+    const bool streaming = this_kv->reply_streaming_.load();
+    const size_t buffered = this_kv->reply_buffer_->available();
+
+    if (!playing) {
+      if (!streaming && buffered == 0 && pending == 0) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+        continue;
+      }
+      // Hold back until there is enough to ride out the first hiccup — unless the whole reply is
+      // already here, in which case waiting would only add latency.
+      const uint32_t prebuffer =
+          this_kv->reply_bytes_per_second_.load() * REPLY_PREBUFFER_MS / 1000;
+      if (streaming && buffered < prebuffer) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+        continue;
+      }
+      this_kv->announcement_speaker_->set_audio_stream_info(audio::AudioStreamInfo(
+          this_kv->reply_bits_per_sample_, this_kv->reply_channels_, this_kv->reply_sample_rate_));
+      this_kv->announcement_speaker_->start();
+      playing = true;
+      ESP_LOGD(TAG, "Playing the reply (%u bytes buffered)", (unsigned) buffered);
+    }
+
+    if (pending == 0) {
+      pending = this_kv->reply_buffer_->read((void *) chunk, PLAYBACK_CHUNK_SIZE, pdMS_TO_TICKS(20));
+      pending_offset = 0;
+    }
+
+    if (pending > 0) {
+      size_t written = this_kv->announcement_speaker_->play(chunk + pending_offset, pending - pending_offset,
+                                                           pdMS_TO_TICKS(20));
+      pending_offset += written;
+      if (pending_offset >= pending) {
+        pending = 0;
+        pending_offset = 0;
+      }
+      continue;
+    }
+
+    // Nothing buffered. While the gateway is still sending this is just the sender's pacing;
+    // once it has finished, the reply is over as soon as the speaker has played out.
+    if (!streaming) {
+      this_kv->announcement_speaker_->finish();
+      while (this_kv->announcement_speaker_->has_buffered_data()) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+      }
+      playing = false;
+      this_kv->reply_finished_.store(true);
+      ESP_LOGD(TAG, "Reply playback finished");
+    }
   }
 }
 
@@ -495,8 +648,29 @@ void KinetoVoice::ws_event_handler_(void *handler_args, esp_event_base_t base, i
       this_kv->ws_connected_.store(false);
       break;
     case WEBSOCKET_EVENT_DATA: {
+      // 0x02 is a binary frame — reply audio; 0x00 continues one that did not fit the client's
+      // receive buffer. Audio is a byte stream, so every part goes into the ring in arrival order
+      // and there is nothing to reassemble. Anything binary outside a stream is not ours to play.
+      if (data->op_code == 0x02 || data->op_code == 0x00) {
+        this_kv->last_inbound_ms_.store(millis());
+        // Buffered without checking whether the stream has been announced yet: `stream_start` is
+        // handled by the main loop, which may not have run since it arrived, and audio dropped in
+        // that window would clip the first word. The playback task is what waits for the
+        // announcement; the buffer is only a pipe, cleared when a reply is abandoned.
+        if (this_kv->reply_buffer_ == nullptr || data->data_len <= 0) {
+          break;
+        }
+        size_t written = this_kv->reply_buffer_->write_without_replacement((const void *) data->data_ptr,
+                                                                          data->data_len);
+        if (written < (size_t) data->data_len) {
+          // Dropping the newest audio keeps what is already playing intact; the alternative
+          // (overwriting the oldest) would tear a hole in the middle of the sentence.
+          ESP_LOGW(TAG, "Reply buffer full, dropped %d bytes", (int) (data->data_len - written));
+        }
+        break;
+      }
       if (data->op_code != 0x01) {
-        // Binary/control frames from the backend are not part of the protocol (audio comes as URLs).
+        // Control frames (ping/pong/close) are the client's business, not ours.
         break;
       }
       if (data->payload_offset != 0 || data->data_len != data->payload_len) {

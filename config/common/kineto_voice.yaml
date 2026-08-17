@@ -116,6 +116,9 @@ kineto_voice:
   id: kv
   microphone: sat1_mics
   media_player: external_media_player
+  # A spoken reply can also arrive as raw PCM over the gateway socket and go straight in here,
+  # playing while the rest is still being synthesized instead of after a whole file is fetched.
+  announcement_speaker: announcement_resampling_speaker
   url: ${kineto_ws_url}
   device_id: ${kineto_device_id}
   auth_token: !secret kineto_auth_token
@@ -150,6 +153,24 @@ kineto_voice:
         duration: 1.0s
     - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
     - script.execute: control_leds
+
+  # A streamed reply bypasses the media_player, so the preparation its announcement pipeline does
+  # (media_player_no_ha.yaml, on_announcement) has to happen here instead: wake the amplifier —
+  # a sleeping TAS2780 turns the reply into silence — and duck whatever music is playing. This
+  # fires while the prebuffer fills, so it is done before the first sample is audible.
+  on_stream_start:
+    - dac_proxy.activate_speaker:
+    - script.execute: tas2780_ensure_active
+    - mixer_speaker.apply_ducking:
+        id: media_mixing_input
+        decibel_reduction: 20
+        duration: 0.0s
+
+  on_stream_stop:
+    - mixer_speaker.apply_ducking:
+        id: media_mixing_input
+        decibel_reduction: 0
+        duration: 1.0s
 
   # A turn the user started could not be delivered: no link at wake time, the link died
   # mid-sentence, or the gateway never answered the wake frame. Without this the device just

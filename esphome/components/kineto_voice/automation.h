@@ -94,6 +94,20 @@ class MediaNextTrigger : public Trigger<> {
   }
 };
 
+class StreamStartTrigger : public Trigger<> {
+ public:
+  explicit StreamStartTrigger(KinetoVoice *parent) {
+    parent->add_on_stream_start_callback([this]() { this->trigger(); });
+  }
+};
+
+class StreamStopTrigger : public Trigger<> {
+ public:
+  explicit StreamStopTrigger(KinetoVoice *parent) {
+    parent->add_on_stream_stop_callback([this]() { this->trigger(); });
+  }
+};
+
 }  // namespace kineto_voice
 }  // namespace esphome
 
