@@ -546,6 +546,7 @@ void KinetoVoice::playback_task(void *params) {
       if (playing) {
         this_kv->announcement_speaker_->stop();
         playing = false;
+        this_kv->reply_playing_.store(false);
         this_kv->reply_finished_.store(true);
         ESP_LOGD(TAG, "Reply playback cut short");
       }
@@ -571,6 +572,7 @@ void KinetoVoice::playback_task(void *params) {
           this_kv->reply_bits_per_sample_, this_kv->reply_channels_, this_kv->reply_sample_rate_));
       this_kv->announcement_speaker_->start();
       playing = true;
+      this_kv->reply_playing_.store(true);
       ESP_LOGD(TAG, "Playing the reply (%u bytes buffered)", (unsigned) buffered);
     }
 
@@ -598,6 +600,7 @@ void KinetoVoice::playback_task(void *params) {
         vTaskDelay(pdMS_TO_TICKS(20));
       }
       playing = false;
+      this_kv->reply_playing_.store(false);
       this_kv->reply_finished_.store(true);
       ESP_LOGD(TAG, "Reply playback finished");
     }

@@ -61,6 +61,10 @@ class KinetoVoice : public Component {
   void send_event(const std::string &kind, const std::string &detail);
 
   bool is_listening() const { return this->listening_.load(); }
+  /// True while a streamed reply is arriving or still being played out.
+  bool is_speaking() const { return this->reply_streaming_.load() || this->reply_playing_.load(); }
+  /// Silences a streamed reply the user no longer wants to hear. Safe to call when none is playing.
+  void abort_reply() { this->abort_reply_stream_(); }
   /// True once the backend acknowledged our hello frame.
   bool is_connected() const { return this->hello_acked_; }
 
@@ -174,6 +178,8 @@ class KinetoVoice : public Component {
   /// Asks the playback task to cut the current reply short. Every call into the speaker is left to
   /// that one task, so silencing it from elsewhere is a request rather than an action.
   std::atomic<bool> reply_abort_{false};
+  /// Whether the playback task currently owns the announcement speaker.
+  std::atomic<bool> reply_playing_{false};
 
   std::atomic<bool> listening_{false};
   std::atomic<bool> ws_connected_{false};

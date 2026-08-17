@@ -88,16 +88,23 @@ micro_wake_word:
                       lambda: return id(kv).is_listening();
                     then:
                       - kineto_voice.stop:
-                    # Stop any other media player announcement
+                    # Shut up whatever the device is saying — a downloaded announcement or a
+                    # reply streamed straight into the announcement speaker. The streamed one has
+                    # to be named separately: it bypasses the media_player, so is_announcing says
+                    # nothing about it, and letting the wake chime start over a live stream would
+                    # put two writers on the same speaker.
                     else:
                       - if:
                           condition:
-                            media_player.is_announcing:
-                              id: external_media_player
+                            or:
+                              - media_player.is_announcing:
+                                  id: external_media_player
+                              - lambda: return id(kv).is_speaking();
                           then:
                             - media_player.stop:
                                 announcement: true
                                 id: external_media_player
+                            - lambda: id(kv).abort_reply();
                           # Start a Kineto listening session and play the wake sound, if enabled
                           else:
                             - if:
