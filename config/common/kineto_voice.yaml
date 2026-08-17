@@ -45,8 +45,9 @@ micro_wake_word:
   models:
     # Our own model, trained on 50k synthesized samples augmented with room impulses, ambient
     # noise and music (microWakeWord, 40k steps). Calibration picked cutoff 0.82 / window 3:
-    # 99.36% recall at 0.93 false accepts per hour. `hey_jarvis` stays alongside it for now so
-    # the two can be compared under the same conditions — drop it once the new one wins.
+    # 99.36% recall at 0.93 false accepts per hour. It is the only phrase this speaker answers
+    # to: `hey_jarvis` and `okay_nabu` rode along for comparison until it won, and left the
+    # loosest threshold in the build (okay_nabu at 0.85) armed against a room playing music.
     - model: ../wake-words/hey_kinetic.json
       id: hey_kinetic
       # Overrides the 0.82 the trainer calibrated. That number minimizes false accepts against an
@@ -56,10 +57,6 @@ micro_wake_word:
       # 0.92 -> 0.95 after a day of daily use: recall stayed fine and the remaining false accepts
       # sat below the measured 0.97+ of genuine wakes, so the margin is still comfortable.
       probability_cutoff: 0.95
-    - model: https://fph-firmware-assets.s3.us-east-1.amazonaws.com/wake-word/hey_jarvis.json
-      id: hey_jarvis
-    - model: https://fph-firmware-assets.s3.us-east-1.amazonaws.com/wake-word/okay_nabu.json
-      id: okay_nabu
     - model: https://fph-firmware-assets.s3.us-east-1.amazonaws.com/wake-word/stop.json
       id: stop
       internal: true
@@ -107,17 +104,27 @@ micro_wake_word:
                             - lambda: id(kv).abort_reply();
                           # Start a Kineto listening session and play the wake sound, if enabled
                           else:
+                            # "Stop" is a wake word model like any other, so it arrives here too —
+                            # and without this guard, saying it alone would open a conversation.
+                            # It exists to silence the device, never to start one, and everything
+                            # it is allowed to silence was already handled above: a ringing timer,
+                            # a listening session, an announcement, a streamed reply. With nothing
+                            # to stop, the right response is to do nothing.
                             - if:
                                 condition:
-                                  switch.is_on: wake_sound
+                                  lambda: return wake_word != "Stop";
                                 then:
-                                  - script.execute:
-                                      id: play_sound
-                                      priority: true
-                                      sound_file: "wake_word_triggered_sound"
-                                  - delay: 300ms
-                            - kineto_voice.start:
-                                wake_word: !lambda return wake_word;
+                                  - if:
+                                      condition:
+                                        switch.is_on: wake_sound
+                                      then:
+                                        - script.execute:
+                                            id: play_sound
+                                            priority: true
+                                            sound_file: "wake_word_triggered_sound"
+                                        - delay: 300ms
+                                  - kineto_voice.start:
+                                      wake_word: !lambda return wake_word;
 
 kineto_voice:
   id: kv
@@ -207,29 +214,6 @@ kineto_voice:
         format: "Kineto backend requested LED state: %s"
         args: ['state.c_str()']
 
-select:
-  - platform: template
-    id: mww_sensitivity_select
-    name: "Wake word sensitivity"
-    optimistic: true
-    initial_option: Slightly sensitive
-    restore_value: true
-    entity_category: config
-    options:
-      - Slightly sensitive
-      - Moderately sensitive
-      - Very sensitive
-    on_value:
-      # Sets specific wake word probabilities computed for each particular model
-      # Note probability cutoffs are set as a quantized uint8 value, each comment has the corresponding floating point cutoff
-      lambda: |-
-        if (x == "Slightly sensitive") {
-          id(okay_nabu).set_probability_cutoff(217);    // 0.85 -> 0.000 FAPH on DipCo (Manifest's default)
-          id(hey_jarvis).set_probability_cutoff(247);   // 0.97 -> 0.563 FAPH on DipCo (Manifest's default)
-        } else if (x == "Moderately sensitive") {
-          id(okay_nabu).set_probability_cutoff(176);    // 0.69 -> 0.376 FAPH on DipCo
-          id(hey_jarvis).set_probability_cutoff(235);   // 0.92 -> 0.939 FAPH on DipCo
-        } else if (x == "Very sensitive") {
-          id(okay_nabu).set_probability_cutoff(143);    // 0.56 -> 0.751 FAPH on DipCo
-          id(hey_jarvis).set_probability_cutoff(212);   // 0.83 -> 1.502 FAPH on DipCo
-        }
+# The stock "Wake word sensitivity" select went with those two models: every cutoff it offered was
+# calibrated for them against an English benchmark, and it could not touch ours. Our threshold is
+# tuned by hand above, against false accepts measured in this actual room.

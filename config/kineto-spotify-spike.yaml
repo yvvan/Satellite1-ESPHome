@@ -43,6 +43,14 @@ esp32:
       CONFIG_MBEDTLS_DYNAMIC_FREE_PEER_CERT: "y"
       CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA: "y"
 
+# Dev only: the device has no screen and its USB port resets it on connect, so this is the only
+# way to read its own account of a dropped link. Nothing connects to it but `esphome logs`.
+# reboot_timeout MUST stay 0: the default is 15 min, meaning the device reboots whenever no API
+# client has been connected for that long — which would manufacture the very dropouts under
+# investigation.
+api:
+  reboot_timeout: 0s
+
 external_components:
   - source:
       type: local
