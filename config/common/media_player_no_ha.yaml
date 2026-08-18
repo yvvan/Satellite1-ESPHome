@@ -1,5 +1,8 @@
 # Copy of common/media_player.yaml for the Kineto (no Home Assistant, no voice_assistant) build.
 # Keep in sync with common/media_player.yaml apart from the documented differences.
+#
+# Documented difference: the media pipeline declares no format (see below), because Kineto plays
+# audio the agent produced and that arrives in whatever the generator wrote — usually MP3.
 
 substitutions:
   jack_connected_sound_file: https://fph-firmware-assets.s3.us-east-1.amazonaws.com/sounds/jack_connected.flac
@@ -77,7 +80,13 @@ media_player:
         - http_announcement_source
     media_pipeline:
       speaker: media_resampling_speaker
-      format: FLAC     # FLAC is the least processor intensive codec
+      # No format on purpose. `format:` does not describe what the pipeline accepts at runtime —
+      # it decides which decoders are COMPILED IN (esphome/components/speaker_source
+      # /media_player.py: request_flac_support / request_mp3_support / request_opus_support). Naming
+      # FLAC here left the binary with a FLAC decoder alone, so a link to any other kind of audio
+      # could not be played at all. NONE means "accepts any format", which pulls all three in.
+      # The announcement pipeline keeps FLAC: everything it plays is a flash-resident chime.
+      format: NONE
       num_channels: 2
       sample_rate: 48000
       sources:
