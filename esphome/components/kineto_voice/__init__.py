@@ -32,6 +32,7 @@ CONF_ON_MEDIA_NEXT = "on_media_next"
 CONF_ON_STREAM_START = "on_stream_start"
 CONF_ON_STREAM_STOP = "on_stream_stop"
 CONF_ANNOUNCEMENT_SPEAKER = "announcement_speaker"
+CONF_ON_MEDIA_PLAY = "on_media_play"
 
 ESP_WEBSOCKET_CLIENT_VERSION = "1.5.0"
 
@@ -73,6 +74,9 @@ MediaResumeTrigger = kineto_voice_ns.class_(
 MediaNextTrigger = kineto_voice_ns.class_(
     "MediaNextTrigger", automation.Trigger.template()
 )
+MediaPlayTrigger = kineto_voice_ns.class_(
+    "MediaPlayTrigger", automation.Trigger.template(cg.std_string)
+)
 StreamStartTrigger = kineto_voice_ns.class_(
     "StreamStartTrigger", automation.Trigger.template()
 )
@@ -96,9 +100,17 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Required(CONF_URL): _validate_ws_url,
         cv.Required(CONF_DEVICE_ID): cv.string,
         cv.Optional(CONF_AUTH_TOKEN, default=""): cv.string,
-        # Without one the device cannot play a streamed reply and does not advertise that it can,
-        # so the gateway keeps sending it URLs.
+        # Without one the device cannot play a streamed reply and does not advertise that it can.
+        # Since a reply is only ever streamed, that leaves the gateway with no way to speak here.
         cv.Optional(CONF_ANNOUNCEMENT_SPEAKER): cv.use_id(speaker.Speaker),
+        # A `play` frame for media is handed here rather than to the media_player: the owner of
+        # the media speaker also runs Spotify Connect, and one owner is what keeps the two from
+        # writing into the same speaker at once.
+        cv.Optional(CONF_ON_MEDIA_PLAY): automation.validate_automation(
+            {
+                cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(MediaPlayTrigger),
+            }
+        ),
         cv.Optional(CONF_ON_CONNECTED): automation.validate_automation(
             {
                 cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(ConnectedTrigger),
@@ -209,6 +221,10 @@ async def to_code(config):
     for conf in config.get(CONF_ON_MEDIA_NEXT, []):
         trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
         await automation.build_automation(trigger, [], conf)
+
+    for conf in config.get(CONF_ON_MEDIA_PLAY, []):
+        trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
+        await automation.build_automation(trigger, [(cg.std_string, "url")], conf)
 
     for conf in config.get(CONF_ON_STREAM_START, []):
         trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)

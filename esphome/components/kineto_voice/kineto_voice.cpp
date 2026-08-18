@@ -410,6 +410,17 @@ void KinetoVoice::handle_text_frame_(const std::string &payload) {
         return false;
       }
       const char *kind = root["kind"] | "";
+      // Media goes to whoever owns the media speaker, when a config named one. On this hardware
+      // that is the cspot player: it decodes the file itself and, being the same component that
+      // plays Spotify, it can hand the speaker over instead of writing on top of another stream.
+      // The media_player pipeline keeps the announcement kind, whose sources are flash chimes.
+      if (strcmp(kind, "MEDIA") == 0 && this->has_media_play_hook_) {
+        if (root["volume"].is<float>()) {
+          this->media_player_->make_call().set_volume(root["volume"].as<float>() / 100.0f).perform();
+        }
+        this->media_play_callbacks_.call(std::string(url));
+        return true;
+      }
       auto call = this->media_player_->make_call();
       call.set_media_url(url);
       if (strcmp(kind, "TTS_ANNOUNCEMENT") == 0) {

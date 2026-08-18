@@ -32,11 +32,13 @@ namespace kineto_voice {
 ///  - inbound:  JSON control frames (hello_ack / listen_stop / ack / play / stop / volume / led /
 ///              stream_start / stream_end) + binary PCM of a spoken reply
 ///
-/// A reply arrives one of two ways. As a URL in a `play` frame, which the media_player downloads
-/// and decodes — simple, but nothing is audible until the whole file exists and has been fetched.
-/// Or streamed: `stream_start`, then raw PCM in binary frames straight into the announcement
-/// speaker, so the reply starts playing while the rest of it is still being synthesized. The
-/// device advertises the second in its hello; the gateway picks per device.
+/// A spoken reply is always streamed: `stream_start`, then raw PCM in binary frames straight into
+/// the announcement speaker, so it starts playing while the rest is still being synthesized. The
+/// device advertises that it can do this in its hello.
+///
+/// A `play` frame carries audio the gateway did not synthesize (a track, a file). Media goes to
+/// the cspot player, which owns the media half of the speaker together with Spotify Connect —
+/// the media_player pipeline handles the announcement kind only.
 class KinetoVoice : public Component {
  public:
   void setup() override;
@@ -102,6 +104,15 @@ class KinetoVoice : public Component {
   void add_on_media_next_callback(std::function<void()> callback) {
     this->has_media_control_hooks_ = true;
     this->media_next_callbacks_.add(std::move(callback));
+  }
+  /// A `play` frame carrying media (a track, a file) rather than a spoken announcement. Wire it to
+  /// whoever owns the media half of the speaker — on this hardware the cspot player, which decodes
+  /// the file itself and can hand the speaker over from Spotify instead of writing on top of it.
+  /// Unwired, media falls back to the media_player pipeline, which plays FLAC but silently
+  /// produces nothing from an MP3 (measured 2026-08-18).
+  void add_on_media_play_callback(std::function<void(std::string)> callback) {
+    this->has_media_play_hook_ = true;
+    this->media_play_callbacks_.add(std::move(callback));
   }
   /// A streamed reply is about to be audible. Wire the same preparation the media_player does for
   /// an announcement: wake the amplifier and duck whatever else is playing.
@@ -217,9 +228,11 @@ class KinetoVoice : public Component {
   CallbackManager<void()> media_pause_callbacks_;
   CallbackManager<void()> media_resume_callbacks_;
   CallbackManager<void()> media_next_callbacks_;
+  CallbackManager<void(std::string)> media_play_callbacks_;
   CallbackManager<void()> stream_start_callbacks_;
   CallbackManager<void()> stream_stop_callbacks_;
   bool has_media_control_hooks_{false};
+  bool has_media_play_hook_{false};
 };
 
 }  // namespace kineto_voice

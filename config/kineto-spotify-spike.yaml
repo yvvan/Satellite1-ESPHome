@@ -87,3 +87,8 @@ kineto_voice:
     - lambda: id(cspot_music).set_paused(false);
   on_media_next:
     - lambda: id(cspot_music).next_track();
+  # A media `play` frame goes to the component that owns the media speaker, so our own audio and
+  # Spotify can never write into it at once. It decodes the file itself; the media_player pipeline
+  # plays FLAC but produces nothing from an MP3.
+  on_media_play:
+    - lambda: id(cspot_music).play_url(url);

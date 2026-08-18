@@ -2,7 +2,7 @@ from pathlib import Path
 
 import esphome.codegen as cg
 import esphome.config_validation as cv
-from esphome.components import esp32, speaker
+from esphome.components import audio, esp32, speaker
 from esphome.const import CONF_ID, CONF_NAME, CONF_PORT
 
 CODEOWNERS = ["@yvvan"]
@@ -44,4 +44,9 @@ async def to_code(config):
         cg.add(var.set_media_speaker(spk))
 
     esp32.add_idf_component(name="cspot", path=config[CONF_CSPOT_COMPONENT_PATH])
+
+    # We decode MP3 on the device for `play_url`, so ask for the decoder here rather than
+    # relying on a media_player pipeline to have asked for it — a pipeline's `format:` is
+    # what pulls the codec into the build, and ours must not depend on how it is set.
+    audio.request_mp3_support()
 
