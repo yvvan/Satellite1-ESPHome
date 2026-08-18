@@ -31,6 +31,9 @@ static const UBaseType_t PLAYBACK_TASK_PRIORITY = 4;
 // How much audio to hold before the first sample is played. Buys the amplifier time to wake and
 // covers the jitter of the next few frames; the cost is that much added latency, so keep it small.
 static const uint32_t REPLY_PREBUFFER_MS = 300;
+// How long to let the speaker finish stopping before announcing a new format. Bounded so a speaker
+// that never reports stopped costs the reply 100 ms rather than the whole turn.
+static const int SPEAKER_STOP_WAIT_STEPS = 10;
 
 static const int WS_RECONNECT_TIMEOUT_MS = 5000;  // TODO(T4): exponential backoff on top of this
 static const int WS_NETWORK_TIMEOUT_MS = 10000;
@@ -578,6 +581,16 @@ void KinetoVoice::playback_task(void *params) {
       if (streaming && buffered < prebuffer) {
         vTaskDelay(pdMS_TO_TICKS(10));
         continue;
+      }
+      // Stop first, even when it looks stopped. A resampler speaker latches its input format at
+      // start() and ignores set_audio_stream_info() on a speaker it considers live, so a reply
+      // whose rate differs from whatever ran before plays at the OLD rate: 24 kHz speech through
+      // a 16 kHz pipeline is the "slow and low" voice (measured 2026-08-18 — the resampler's
+      // input ring came out 3200 bytes instead of 4800). cspot does the same stop/start dance
+      // around every Spotify track, which is why its 44.1 kHz never had this problem.
+      this_kv->announcement_speaker_->stop();
+      for (int i = 0; i < SPEAKER_STOP_WAIT_STEPS && !this_kv->announcement_speaker_->is_stopped(); i++) {
+        vTaskDelay(pdMS_TO_TICKS(10));
       }
       this_kv->announcement_speaker_->set_audio_stream_info(audio::AudioStreamInfo(
           this_kv->reply_bits_per_sample_, this_kv->reply_channels_, this_kv->reply_sample_rate_));
