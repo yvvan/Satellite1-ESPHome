@@ -339,6 +339,14 @@ logger:
   logs:
     ltr_als_ps: WARN
     i2c.idf: WARN
+    # The websocket to the gateway drops occasionally and neither side records why: the client
+    # that knows the reason is an ESP-IDF component, and its output is compiled out below DEBUG.
+    # These tags make it say what happened — a reset, a timeout, a read error and its errno.
+    websocket_client: DEBUG
+    transport_ws: DEBUG
+    transport: DEBUG
+    transport_base: DEBUG
+    esp-tls: DEBUG
     wifi: INFO
     esp-idf: INFO
     micro_wake_word: DEBUG

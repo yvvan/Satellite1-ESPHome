@@ -39,6 +39,9 @@ esp32:
       # playing that left ~7KB free and a largest block under 2KB, so the voice reply could
       # not even open its (plain HTTP) socket — ESP_ERR_HTTP_CONNECT on every attempt.
       # Dynamic buffers allocate on demand and release between records.
+      # Without this the ESP-IDF logs above DEBUG are stripped at compile time, so the network
+      # client's own account of a dropped socket never reaches the log at all.
+      CONFIG_LOG_MAXIMUM_LEVEL_DEBUG: "y"
       CONFIG_MBEDTLS_DYNAMIC_BUFFER: "y"
       CONFIG_MBEDTLS_DYNAMIC_FREE_PEER_CERT: "y"
       CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA: "y"
