@@ -45,7 +45,7 @@ static const int WS_PINGPONG_TIMEOUT_SEC = 20;
 static const uint32_t WS_LIVENESS_TIMEOUT_MS = 45000;  // 4+ missed gateway heartbeats
 // How long a wake frame may go unanswered before the link counts as dead. The gateway replies
 // within milliseconds on a healthy link; the slack is for a loaded Wi-Fi, not for a broken path.
-static const uint32_t LISTEN_ACK_TIMEOUT_MS = 1500;
+static const uint32_t LISTEN_ACK_TIMEOUT_MS = 15000;
 // While the stored identity is being refused, how often to try it again. Generous on purpose:
 // the identity only becomes valid again through something slow (its backend coming back, the
 // device row being restored), and every retry restarts the socket.
@@ -233,14 +233,22 @@ void KinetoVoice::loop() {
     }
   }
 
-  // A wake frame is answered immediately (the gateway sends the listening LED state), so nothing
-  // inbound within the timeout means this socket is one-way dead — a half-open connection the
-  // port-forwarder never closed. Give up on this turn now instead of streaming a whole utterance
-  // into the void and only noticing 45 s later, several lost turns down the line.
+  // A wake frame is normally answered at once (the gateway sends the listening LED state), so
+  // nothing inbound for a long time means this socket is one-way dead — a half-open connection the
+  // port-forwarder never closed. Give up on that turn instead of streaming a whole utterance into
+  // the void and only noticing at the heartbeat timeout, several lost turns down the line.
+  //
+  // The window is deliberately generous. It was 1.5 s, and that was measured too tight on
+  // 2026-08-19: a real wake was answered right at the boundary, and the device tore down a
+  // realtime session that had just opened, then announced that Kinetik was unreachable — while
+  // the link was fine. The wake frame goes out while the chime is still playing and the wake-word
+  // model is still running, so the whole path is at its busiest exactly here. Announcing trouble
+  // is for when things are genuinely broken; a reconnect usually wins long before this.
   if (this->listening_.load() && this->listen_started_ms_ != 0 &&
       millis() - this->listen_started_ms_ > LISTEN_ACK_TIMEOUT_MS &&
       this->last_inbound_ms_.load() <= this->listen_started_ms_) {
-    ESP_LOGW(TAG, "No gateway response to the wake frame; treating the link as dead");
+    ESP_LOGW(TAG, "No gateway response to the wake frame in %u ms; treating the link as dead",
+             (unsigned) (millis() - this->listen_started_ms_));
     this->stop_listening_();
     this->turn_failed_callbacks_.call();
     this->restart_client_("no gateway response to the wake frame");

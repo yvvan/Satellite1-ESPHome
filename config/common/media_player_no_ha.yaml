@@ -39,6 +39,12 @@ audio_file:
   # to say without the gateway's TTS, so it ships in flash. English on purpose: this is a built-in
   # device phrase, identical for every owner, not the language of whoever happens to be talking to
   # it. FLAC 16 kHz / mono / 16-bit, the only shape the announcement decoder plays.
+  #
+  # Spoken by the same voice as everything else the speaker says — `ash`, the one the gateway's TTS
+  # and the realtime front end both use (VOICE_GATEWAY_VOICE). A different voice here made the one
+  # sentence the device says on its own sound like it came from somewhere else. Re-generate with
+  # that voice and these exact words if it ever changes:
+  #   "I cannot reach Kinetic right now. If I am not connected yet, ask in the chat to connect me"
   - id: kineto_unreachable_sound
     file: ../sounds/kineto_unreachable.flac
   - id: center_button_press_sound
