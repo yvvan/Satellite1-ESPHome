@@ -50,14 +50,19 @@ micro_wake_word:
     # loosest threshold in the build (okay_nabu at 0.85) armed against a room playing music.
     - model: ../wake-words/hey_kinetic.json
       id: hey_kinetic
-      # Below the manifest's calibrated 0.80, which is the opposite of what the previous model
+      # Just below the manifest's calibrated 0.80, which is the opposite of what the previous model
       # needed (it was raised to 0.95 to smother false accepts on "hey jarvis" and Russian
       # "рулетик"). Training with those phrases as hard negatives made the model pickier in both
       # directions: it now rejects them on its own — 3%, 2% and 0% of samples respectively — but
-      # genuine wakes in this room dropped from 0.95-0.98 to 0.82-0.87, leaving no room above
-      # 0.80 and dropping attempts that landed just under. The confusables average 0.02-0.14, so
-      # the space below is cheap to use.
-      probability_cutoff: 0.70
+      # genuine wakes in this room dropped from 0.95-0.98 to 0.82-0.87, so 0.80 leaves almost no
+      # room and drops attempts that land just under it.
+      #
+      # 0.70 was too generous, measured 2026-08-19: two wakes into an empty room at sliding
+      # average 0.73 and 0.74 (the gateway logged ten seconds of silence and closed both turns),
+      # and 41 of 64 detections in the device log sat below the manifest's 0.80 — the band this
+      # cutoff opened is where the false accepts live. 0.78 drops both of those and still keeps
+      # the quietest genuine wake measured that day (0.79).
+      probability_cutoff: 0.78
     - model: https://fph-firmware-assets.s3.us-east-1.amazonaws.com/wake-word/stop.json
       id: stop
       internal: true
