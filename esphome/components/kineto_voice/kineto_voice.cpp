@@ -192,6 +192,8 @@ void KinetoVoice::loop() {
 
   if (this->pending_reauth_) {
     this->pending_reauth_ = false;
+    // Ours, not a failure — see expected_restart_.
+    this->expected_restart_ = true;
     this->restart_client_("paired, reconnecting with the issued identity");
     return;
   }
@@ -253,10 +255,14 @@ void KinetoVoice::loop() {
     // Whatever was left of a reply died with the socket; the rest of it is never coming.
     this->abort_reply_stream_();
     if (this->listening_.load()) {
-      // The user was mid-sentence; that turn is gone with the socket.
+      // The user was mid-sentence; that turn is gone with the socket — unless we are the ones who
+      // took the socket away, in which case nothing was lost and there is nothing to announce.
+      const bool ours = this->expected_restart_;
       this->stop_listening_();
-      this->turn_failed_callbacks_.call();
+      if (!ours)
+        this->turn_failed_callbacks_.call();
     }
+    this->expected_restart_ = false;
     this->disconnected_callbacks_.call();
   }
 

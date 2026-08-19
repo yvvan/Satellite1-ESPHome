@@ -204,6 +204,11 @@ class KinetoVoice : public Component {
   std::atomic<uint32_t> last_inbound_ms_{0};
   /// Set when a set_token frame arrives; loop() reconnects with the new credential.
   bool pending_reauth_{false};
+  /// True while a disconnect is OUR OWN doing, so the drop is not reported as a failed turn.
+  /// Pairing is the case that needs it: the gateway hands over an identity, this device restarts
+  /// its socket to use it, and the drop is otherwise indistinguishable from a link that died
+  /// mid-sentence — which answers a pairing that just succeeded with "Kinetik unreachable".
+  bool expected_restart_{false};
   /// HTTP status of the last failed WS upgrade, recorded by the websocket task; 0 = none.
   std::atomic<int> last_handshake_status_{0};
   /// True while the gateway refuses the stored identity and the client is connected tokenless so
