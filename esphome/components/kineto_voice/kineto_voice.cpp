@@ -31,6 +31,9 @@ static const UBaseType_t PLAYBACK_TASK_PRIORITY = 4;
 // How much audio to hold before the first sample is played. Buys the amplifier time to wake and
 // covers the jitter of the next few frames; the cost is that much added latency, so keep it small.
 static const uint32_t REPLY_PREBUFFER_MS = 300;
+// How long buffered audio may wait for its stream_start before it is dropped. Generous: the frame
+// is only ever a few milliseconds behind, and dropping is better than playing at a guessed rate.
+static const uint32_t FORMAT_WAIT_TIMEOUT_MS = 2000;
 // How long to let the speaker finish stopping before announcing a new format. Bounded so a speaker
 // that never reports stopped costs the reply 100 ms rather than the whole turn.
 static const int SPEAKER_STOP_WAIT_STEPS = 10;
@@ -495,6 +498,7 @@ void KinetoVoice::begin_reply_stream_(int sample_rate, int channels, int bits_pe
   this->reply_channels_ = channels;
   this->reply_bits_per_sample_ = bits_per_sample;
   this->reply_bytes_per_second_.store((uint32_t) sample_rate * channels * bits_per_sample / 8);
+  this->reply_format_known_.store(true);
   this->reply_streaming_.store(true);
   // Fire before a sample is audible: the amplifier needs waking and the music needs ducking, and
   // the prebuffer is exactly the room this has to happen in.
@@ -502,6 +506,7 @@ void KinetoVoice::begin_reply_stream_(int sample_rate, int channels, int bits_pe
 }
 
 void KinetoVoice::abort_reply_stream_() {
+  this->reply_format_known_.store(false);
   if (this->reply_buffer_ == nullptr)
     return;
   if (!this->reply_streaming_.load() && this->reply_buffer_->available() == 0)
@@ -552,6 +557,7 @@ void KinetoVoice::playback_task(void *params) {
   size_t pending = 0;
   size_t pending_offset = 0;
   bool playing = false;
+  uint32_t format_wait_ms = 0;
 
   while (true) {
     if (this_kv->reply_abort_.exchange(false)) {
@@ -571,9 +577,26 @@ void KinetoVoice::playback_task(void *params) {
 
     if (!playing) {
       if (!streaming && buffered == 0 && pending == 0) {
+        format_wait_ms = 0;
         vTaskDelay(pdMS_TO_TICKS(20));
         continue;
       }
+      // Audio can reach the ring before its stream_start is parsed: bytes arrive on the socket task
+      // and the frame is drained in the main loop. Starting here would use the LAST stream's format
+      // — on the first reply after a boot, the defaults — and 24 kHz speech played as 16 kHz is the
+      // slow, deep voice. So wait for the format instead of guessing a rate.
+      if (!this_kv->reply_format_known_.load()) {
+        format_wait_ms += 10;
+        if (format_wait_ms > FORMAT_WAIT_TIMEOUT_MS) {
+          ESP_LOGE(TAG, "Audio without a stream_start for %u ms; dropping %u buffered bytes",
+                   (unsigned) format_wait_ms, (unsigned) buffered);
+          this_kv->reply_buffer_->reset();
+          format_wait_ms = 0;
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+        continue;
+      }
+      format_wait_ms = 0;
       // Hold back until there is enough to ride out the first hiccup — unless the whole reply is
       // already here, in which case waiting would only add latency.
       const uint32_t prebuffer =
@@ -624,6 +647,9 @@ void KinetoVoice::playback_task(void *params) {
         vTaskDelay(pdMS_TO_TICKS(20));
       }
       playing = false;
+      // The next stream must announce its own format; keeping this one's would let a reply at a
+      // different rate start on stale settings, which is the bug this flag exists for.
+      this_kv->reply_format_known_.store(false);
       this_kv->reply_playing_.store(false);
       this_kv->reply_finished_.store(true);
       ESP_LOGD(TAG, "Reply playback finished");

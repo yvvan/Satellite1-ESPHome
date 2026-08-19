@@ -178,6 +178,8 @@ class KinetoVoice : public Component {
   /// True between stream_start and stream_end: the gateway is still sending this reply. The
   /// playback task keeps draining after it clears, so the tail is never cut off.
   std::atomic<bool> reply_streaming_{false};
+  /** True once THIS stream announced its format. Playing before it does means guessing a rate. */
+  std::atomic<bool> reply_format_known_{false};
   /// Announced PCM shape of the reply currently being received.
   std::atomic<uint32_t> reply_bytes_per_second_{32000};
   int reply_sample_rate_{16000};
