@@ -110,7 +110,7 @@ class KinetoVoice : public Component {
   /// the file itself and can hand the speaker over from Spotify instead of writing on top of it.
   /// Unwired, media falls back to the media_player pipeline, which plays FLAC but silently
   /// produces nothing from an MP3 (measured 2026-08-18).
-  void add_on_media_play_callback(std::function<void(std::string)> callback) {
+  void add_on_media_play_callback(std::function<void(std::string, std::string)> callback) {
     this->has_media_play_hook_ = true;
     this->media_play_callbacks_.add(std::move(callback));
   }
@@ -230,7 +230,8 @@ class KinetoVoice : public Component {
   CallbackManager<void()> media_pause_callbacks_;
   CallbackManager<void()> media_resume_callbacks_;
   CallbackManager<void()> media_next_callbacks_;
-  CallbackManager<void(std::string)> media_play_callbacks_;
+  /** url + the device token to fetch it with: the gateway serves audio only to the device it is for. */
+  CallbackManager<void(std::string, std::string)> media_play_callbacks_;
   CallbackManager<void()> stream_start_callbacks_;
   CallbackManager<void()> stream_stop_callbacks_;
   bool has_media_control_hooks_{false};

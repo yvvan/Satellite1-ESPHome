@@ -91,4 +91,4 @@ kineto_voice:
   # Spotify can never write into it at once. It decodes the file itself; the media_player pipeline
   # plays FLAC but produces nothing from an MP3.
   on_media_play:
-    - lambda: id(cspot_music).play_url(url);
+    - lambda: id(cspot_music).play_url(url, token);

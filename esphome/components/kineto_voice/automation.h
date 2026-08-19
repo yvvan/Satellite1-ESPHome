@@ -94,10 +94,11 @@ class MediaNextTrigger : public Trigger<> {
   }
 };
 
-class MediaPlayTrigger : public Trigger<std::string> {
+class MediaPlayTrigger : public Trigger<std::string, std::string> {
  public:
   explicit MediaPlayTrigger(KinetoVoice *parent) {
-    parent->add_on_media_play_callback([this](const std::string &url) { this->trigger(url); });
+    parent->add_on_media_play_callback(
+        [this](const std::string &url, const std::string &token) { this->trigger(url, token); });
   }
 };
 

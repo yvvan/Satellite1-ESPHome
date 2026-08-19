@@ -54,7 +54,7 @@ class CSpotPlayer : public Component {
    * all (no speaker configured, or the previous URL is still shutting down).
    * The fetch and the decode run on their own task, so this returns immediately.
    */
-  bool play_url(const std::string &url);
+  bool play_url(const std::string &url, const std::string &auth_token);
 
   /** Stop URL playback, if any. Does not resume Spotify: the user asked for it. */
   void stop_url();
@@ -77,6 +77,7 @@ class CSpotPlayer : public Component {
   // URL playback state. `url_playing_` is read by the Spotify data callback on the cspot
   // task, so it has to be atomic; the URL itself is only touched while no task runs.
   std::string url_;
+  std::string url_auth_token_;
   std::atomic<bool> url_playing_{false};
   std::atomic<bool> url_stop_requested_{false};
   TaskHandle_t url_task_handle_{nullptr};

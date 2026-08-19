@@ -434,7 +434,7 @@ void CSpotPlayer::next_track() {
   this->runner_->next_track();
 }
 
-bool CSpotPlayer::play_url(const std::string &url) {
+bool CSpotPlayer::play_url(const std::string &url, const std::string &auth_token) {
   if (this->media_speaker_ == nullptr) {
     ESP_LOGW(TAG, "Cannot play a URL: no media speaker configured");
     return false;
@@ -459,6 +459,7 @@ bool CSpotPlayer::play_url(const std::string &url) {
   this->media_speaker_->stop();
 
   this->url_ = url;
+  this->url_auth_token_ = auth_token;
   this->url_stop_requested_.store(false);
   this->url_playing_.store(true);
   if (xTaskCreate(CSpotPlayer::url_task_, "cspot_url_play", URL_TASK_STACK_SIZE, (void *) this,
@@ -501,6 +502,14 @@ void CSpotPlayer::run_url_playback_() {
   if (client == nullptr) {
     ESP_LOGE(TAG, "URL playback: cannot init the http client");
     return;
+  }
+  // The gateway is on the public internet and hands a clip only to the device it was stored for, so
+  // the fetch presents the same token this device authenticated its socket with. Without it the
+  // request is a 401 — which is the point.
+  if (!this->url_auth_token_.empty()) {
+    esp_http_client_set_header(client, "X-Device-Token", this->url_auth_token_.c_str());
+  } else {
+    ESP_LOGW(TAG, "URL playback: no device token to present; the gateway will refuse this fetch");
   }
 
   bool speaker_started = false;

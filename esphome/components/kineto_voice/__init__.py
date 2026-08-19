@@ -75,7 +75,7 @@ MediaNextTrigger = kineto_voice_ns.class_(
     "MediaNextTrigger", automation.Trigger.template()
 )
 MediaPlayTrigger = kineto_voice_ns.class_(
-    "MediaPlayTrigger", automation.Trigger.template(cg.std_string)
+    "MediaPlayTrigger", automation.Trigger.template(cg.std_string, cg.std_string)
 )
 StreamStartTrigger = kineto_voice_ns.class_(
     "StreamStartTrigger", automation.Trigger.template()
@@ -224,7 +224,9 @@ async def to_code(config):
 
     for conf in config.get(CONF_ON_MEDIA_PLAY, []):
         trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
-        await automation.build_automation(trigger, [(cg.std_string, "url")], conf)
+        await automation.build_automation(
+            trigger, [(cg.std_string, "url"), (cg.std_string, "token")], conf
+        )
 
     for conf in config.get(CONF_ON_STREAM_START, []):
         trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)

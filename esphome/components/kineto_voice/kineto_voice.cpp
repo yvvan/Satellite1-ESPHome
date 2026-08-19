@@ -424,7 +424,9 @@ void KinetoVoice::handle_text_frame_(const std::string &payload) {
         if (root["volume"].is<float>()) {
           this->media_player_->make_call().set_volume(root["volume"].as<float>() / 100.0f).perform();
         }
-        this->media_play_callbacks_.call(std::string(url));
+        // The token goes with the url: the gateway serves a clip only to the device it was stored
+        // for, so the fetch has to identify itself the same way this socket did.
+        this->media_play_callbacks_.call(std::string(url), this->auth_token_);
         return true;
       }
       auto call = this->media_player_->make_call();
