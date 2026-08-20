@@ -211,6 +211,10 @@ class KinetoVoice : public Component {
   bool expected_restart_{false};
   /// HTTP status of the last failed WS upgrade, recorded by the websocket task; 0 = none.
   std::atomic<int> last_handshake_status_{0};
+  // Consecutive connects that died before hello_ack. Some proxies swallow the upgrade status
+  // (through the prod GCLB a 401 surfaces as CONNECTED + an instant drop with no handshake
+  // code), so refusal is also inferred from this pattern — see loop().
+  std::atomic<uint32_t> unacked_drops_{0};
   /// True while the gateway refuses the stored identity and the client is connected tokenless so
   /// a new pairing password can adopt the device. The stored identity itself stays untouched —
   /// only a successful pairing (set_token) replaces it — and is retried periodically in case the

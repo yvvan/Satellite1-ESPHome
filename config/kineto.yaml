@@ -18,9 +18,10 @@ substitutions:
   xmos_fw_version: "v1.0.3"
 
   # Kineto backend endpoint + device credentials.
-  # Dev install: local voice-gateway on the dev machine (Windows host LAN IP,
-  # port-proxied into WSL). Override per install.
-  kineto_ws_url: ws://192.168.178.142:8085/ws/device
+  # Production gateway. For a dev install override per install — e.g. the local
+  # voice-gateway on the dev machine (ws://<LAN-IP>:8085/ws/device, port-proxied into WSL)
+  # or the dev cloud (wss://speaker.hague.dev/ws/device).
+  kineto_ws_url: wss://speaker.kineto.app/ws/device
   kineto_device_id: satellite1-dev
   kineto_auth_token: dev-token
 

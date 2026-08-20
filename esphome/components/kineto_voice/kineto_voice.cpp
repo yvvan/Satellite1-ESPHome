@@ -50,6 +50,9 @@ static const uint32_t LISTEN_ACK_TIMEOUT_MS = 15000;
 // the identity only becomes valid again through something slow (its backend coming back, the
 // device row being restored), and every retry restarts the socket.
 static const uint32_t AUTH_RETRY_INTERVAL_MS = 5 * 60 * 1000;
+// Consecutive connects dying before hello_ack that are read as a refused identity (~25 s at the
+// client's 8 s reconnect cadence). One or two happen on ordinary blips; three in a row do not.
+static const uint32_t UNACKED_DROPS_FOR_REFUSAL = 3;
 constexpr const char *NVS_NAMESPACE = "kineto";
 constexpr const char *NVS_KEY_DEVICE_ID = "device_id";
 constexpr const char *NVS_KEY_TOKEN = "auth_token";
@@ -205,10 +208,22 @@ void KinetoVoice::loop() {
   // every AUTH_RETRY_INTERVAL_MS. A gateway whose backend is merely down answers 503, not 401,
   // so an outage never lands here.
   int handshake_status = this->last_handshake_status_.exchange(0);
-  if ((handshake_status == 401 || handshake_status == 403) && !this->auth_token_.empty() &&
+  // The status code is the explicit signal; the drop counter is the inferred one — through a
+  // proxy that completes the upgrade itself (the prod GCLB), the gateway's 401 surfaces as a
+  // connect followed by an instant drop with no handshake code, so three connects in a row that
+  // die before hello_ack are read as the same refusal.
+  bool refused_by_status = (handshake_status == 401 || handshake_status == 403);
+  bool refused_by_drops = this->unacked_drops_.load() >= UNACKED_DROPS_FOR_REFUSAL;
+  if ((refused_by_status || refused_by_drops) && !this->auth_token_.empty() &&
       !this->pairing_fallback_) {
-    ESP_LOGW(TAG, "Gateway refused the stored identity (HTTP %d); offering pairing, keeping the identity",
-             handshake_status);
+    if (refused_by_status) {
+      ESP_LOGW(TAG, "Gateway refused the stored identity (HTTP %d); offering pairing, keeping the identity",
+               handshake_status);
+    } else {
+      ESP_LOGW(TAG, "Gateway dropped %u connects before hello_ack; treating as a refused identity, offering pairing",
+               (unsigned) this->unacked_drops_.load());
+    }
+    this->unacked_drops_.store(0);
     this->pairing_fallback_ = true;
     this->last_auth_retry_ms_ = millis();
     this->restart_client_("identity refused, connecting in pairing mode");
@@ -396,6 +411,7 @@ void KinetoVoice::handle_text_frame_(const std::string &payload) {
     if (strcmp(type, "hello_ack") == 0) {
       ESP_LOGD(TAG, "Backend acknowledged hello");
       this->hello_acked_ = true;
+      this->unacked_drops_.store(0);
       this->connected_callbacks_.call();
     } else if (strcmp(type, "listen_stop") == 0) {
       ESP_LOGD(TAG, "Backend requested listen stop");
@@ -707,6 +723,10 @@ void KinetoVoice::ws_event_handler_(void *handler_args, esp_event_base_t base, i
     case WEBSOCKET_EVENT_ERROR:
       if (this_kv->ws_connected_.load()) {
         ESP_LOGD(TAG, "WebSocket disconnected");
+        // Counts a session that died before hello_ack; the ack handler resets it. Only sessions
+        // that actually CONNECTED count — a gateway that is down never completes the connect, so
+        // this pattern is specific to "accepted, then thrown out".
+        this_kv->unacked_drops_.fetch_add(1);
       }
       // A failed upgrade carries its HTTP status; loop() reads 401/403 as "identity refused".
       // The client struct never clears the field, but every acted-on status ends in

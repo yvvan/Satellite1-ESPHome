@@ -1,4 +1,1 @@
-esphome==2026.4.5
-setuptools
-yamllint
-pre-commit
+esphome==2026.6.4
