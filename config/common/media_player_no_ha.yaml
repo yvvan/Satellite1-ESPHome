@@ -44,7 +44,11 @@ audio_file:
   # and the realtime front end both use (VOICE_GATEWAY_VOICE). A different voice here made the one
   # sentence the device says on its own sound like it came from somewhere else. Re-generate with
   # that voice and these exact words if it ever changes:
-  #   "I cannot reach Kinetic right now. If I am not connected yet, ask in the chat to connect me"
+  #   "No connection right now — try again in a moment."
+  # Only about the link, deliberately: the pairing case cannot happen without one (an unpaired
+  # speaker still has a socket, and the gateway speaks that case itself), and the old wording sent
+  # the user to the chat over a problem that fixes itself in seconds. Voiced by the realtime model,
+  # so the phrase and the conversation are the same person.
   - id: kineto_unreachable_sound
     file: ../sounds/kineto_unreachable.flac
   - id: center_button_press_sound
