@@ -132,6 +132,10 @@ class KinetoVoice : public Component {
   void connect_client_();
   /// Tears the client down and starts a fresh one (liveness watchdog, or a fresh credential).
   void restart_client_(const char *reason);
+  void begin_offline_capture_(const std::string &wake_word);
+  void end_offline_capture_();
+  /// Sends the recording and clears it. Runs on the audio task — see client_mutex_.
+  void send_stored_turn_();
   /// Reads one string from the kineto NVS namespace; empty when absent.
   std::string load_stored_identity_(const char *key);
   /// Persists the identity issued by pairing, so the device comes back paired after a reboot.
@@ -228,6 +232,20 @@ class KinetoVoice : public Component {
   /// wake frame within milliseconds, so silence past ACK_TIMEOUT means the socket is dead in a way
   /// TCP has not noticed yet — waiting for the 45 s liveness watchdog would eat several turns.
   uint32_t listen_started_ms_{0};
+
+  /// Recording a turn that has nowhere to go yet: the wake word was heard with no link to carry it.
+  /// The speaker hears its own wake word, so an offline moment costs the connection and not the
+  /// question — the words are kept and sent when the socket comes back, seconds later.
+  std::atomic<bool> capturing_offline_{false};
+  /// millis() when that recording started; it runs for OFFLINE_CAPTURE_MS and no longer.
+  uint32_t offline_started_ms_{0};
+  /// A finished offline recording sitting in the audio ring, waiting for a link.
+  std::atomic<bool> stored_turn_pending_{false};
+  /// millis() when it ended — the age the gateway is told, and what makes it too stale to send.
+  std::atomic<uint32_t> stored_turn_ended_ms_{0};
+  /// Set by loop() once the link is back and the gateway has answered hello; the audio task sends
+  /// the recording, because it is the task that owns sending over this socket.
+  std::atomic<bool> flush_stored_turn_{false};
 
   // Inbound text frames queued by the websocket task, drained by loop().
   Mutex inbound_mutex_;

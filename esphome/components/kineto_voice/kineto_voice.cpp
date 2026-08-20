@@ -46,6 +46,13 @@ static const uint32_t WS_LIVENESS_TIMEOUT_MS = 45000;  // 4+ missed gateway hear
 // How long a wake frame may go unanswered before the link counts as dead. The gateway replies
 // within milliseconds on a healthy link; the slack is for a loaded Wi-Fi, not for a broken path.
 static const uint32_t LISTEN_ACK_TIMEOUT_MS = 15000;
+// How long a turn recorded with no link may run. The audio ring holds 256 KB — eight seconds of
+// 16 kHz mono — and a question asked of a speaker is shorter than that; the tail is trimmed by the
+// transcriber anyway, so this is a cap and not a measurement of when the sentence ended.
+static const uint32_t OFFLINE_CAPTURE_MS = 7000;
+// How stale such a recording may be when the link returns. The gateway enforces its own, wider
+// window; this one only avoids spending a burst of TLS on something that will certainly be dropped.
+static const uint32_t STORED_TURN_MAX_AGE_MS = 170000;
 // While the stored identity is being refused, how often to try it again. Generous on purpose:
 // the identity only becomes valid again through something slow (its backend coming back, the
 // device row being restored), and every retry restarts the socket.
@@ -244,6 +251,16 @@ void KinetoVoice::loop() {
     return;
   }
 
+  if (this->capturing_offline_.load() && millis() - this->offline_started_ms_ > OFFLINE_CAPTURE_MS) {
+    this->end_offline_capture_();
+  }
+  // A recording can only go out once the gateway has answered hello: before that the socket may
+  // still be refused, and a burst sent into a refusal is a burst lost.
+  if (this->stored_turn_pending_.load() && !this->capturing_offline_.load() && connected &&
+      this->hello_acked_ && !this->flush_stored_turn_.load()) {
+    this->flush_stored_turn_.store(true);
+  }
+
   // Liveness watchdog: the gateway heartbeats every 10s while connected.
   if (connected) {
     uint32_t last = this->last_inbound_ms_.load();
@@ -369,8 +386,9 @@ void KinetoVoice::start(const std::string &wake_word) {
   if (this->is_failed())
     return;
   if (!this->ws_connected_.load()) {
-    ESP_LOGW(TAG, "Ignoring start: not connected to Kineto backend");
-    this->turn_failed_callbacks_.call();
+    // Not a failed turn any more, and nothing is said about it: the words are kept and sent when
+    // the link is back, and the answer arrives by itself a few seconds later.
+    this->begin_offline_capture_(wake_word);
     return;
   }
   if (this->listening_.load()) {
@@ -392,6 +410,77 @@ void KinetoVoice::start(const std::string &wake_word) {
   this->listen_started_ms_ = millis();
   this->microphone_->start();
   this->listening_start_callbacks_.call();
+}
+
+void KinetoVoice::begin_offline_capture_(const std::string &wake_word) {
+  if (this->capturing_offline_.load())
+    return;
+  ESP_LOGD(TAG, "No link at wake (%s); recording the turn to send when there is one", wake_word.c_str());
+  this->abort_reply_stream_();
+  this->ring_buffer_->reset();
+  this->stored_turn_pending_.store(false);
+  this->offline_started_ms_ = millis();
+  this->capturing_offline_.store(true);
+  this->microphone_->start();
+  // The ring lights as usual: the user is being listened to, which is true. Saying anything about
+  // the link would be reporting a problem that fixes itself before the answer is due.
+  this->listening_start_callbacks_.call();
+}
+
+void KinetoVoice::end_offline_capture_() {
+  this->capturing_offline_.store(false);
+  this->microphone_->stop();
+  this->listening_stop_callbacks_.call();
+  this->stored_turn_ended_ms_.store(millis());
+  this->stored_turn_pending_.store(true);
+  ESP_LOGD(TAG, "Offline turn recorded (%u bytes); waiting for a link",
+           (unsigned) this->ring_buffer_->available());
+}
+
+void KinetoVoice::send_stored_turn_() {
+  this->flush_stored_turn_.store(false);
+  const uint32_t age = millis() - this->stored_turn_ended_ms_.load();
+  size_t available = this->ring_buffer_->available();
+  if (age > STORED_TURN_MAX_AGE_MS || available == 0) {
+    if (available > 0)
+      ESP_LOGW(TAG, "Dropping a recording %u s old; too late to ask", (unsigned) (age / 1000));
+    this->ring_buffer_->reset();
+    this->stored_turn_pending_.store(false);
+    return;
+  }
+  ESP_LOGD(TAG, "Sending a stored turn: %u bytes, recorded %u ms ago", (unsigned) available,
+           (unsigned) age);
+  {
+    // Every send from this task is fenced against the client's teardown — see client_mutex_. The
+    // control frames included: send_json_ does not lock, because every other caller is the loop.
+    LockGuard guard(this->client_mutex_);
+    bool opened = this->send_json_([age](JsonObject root) {
+      root["type"] = "stored_turn";
+      root["recordedMsAgo"] = age;
+      root["sampleRate"] = 16000;
+    });
+    if (!opened) {
+      // The link went again. The recording stays where it is and the next connect tries again.
+      ESP_LOGW(TAG, "Could not open the stored turn; keeping it for the next link");
+      return;
+    }
+    uint8_t chunk[STREAM_CHUNK_SIZE];
+    while (true) {
+      size_t read = this->ring_buffer_->read((void *) chunk, STREAM_CHUNK_SIZE, 0);
+      if (read == 0)
+        break;
+      if (this->client_ == nullptr || !this->ws_connected_.load())
+        break;
+      int sent = esp_websocket_client_send_bin(this->client_, (const char *) chunk, read,
+                                              WS_SEND_TIMEOUT_TICKS);
+      if (sent < 0) {
+        ESP_LOGW(TAG, "Stored turn stalled mid-send; the gateway will drop what arrived");
+        break;
+      }
+    }
+    this->send_json_([](JsonObject root) { root["type"] = "stored_turn_end"; });
+  }
+  this->stored_turn_pending_.store(false);
 }
 
 void KinetoVoice::stop() {
@@ -581,7 +670,11 @@ void KinetoVoice::abort_reply_stream_() {
 }
 
 void KinetoVoice::on_mic_data_(const std::vector<uint8_t> &data) {
-  if (!this->listening_.load() || !this->ws_connected_.load())
+  const bool live = this->listening_.load() && this->ws_connected_.load();
+  // The same ring serves both: a live utterance drains straight to the socket, an offline one stays
+  // until there is a socket to drain it to. They cannot overlap — one needs a link and the other
+  // exists only without one.
+  if (!live && !this->capturing_offline_.load())
     return;
 
   // The satellite1 microphone delivers 32-bit samples at 16 kHz; convert to 16-bit LE mono
@@ -725,6 +818,12 @@ void KinetoVoice::stream_task(void *params) {
   uint8_t chunk[STREAM_CHUNK_SIZE];
 
   while (true) {
+    if (this_kv->flush_stored_turn_.load()) {
+      // Sent from here rather than from the loop: this is the task that owns sending over this
+      // socket, and a 256 KB burst through TLS is not something to do on the main thread.
+      this_kv->send_stored_turn_();
+      continue;
+    }
     if (this_kv->listening_.load() && this_kv->ws_connected_.load()) {
       size_t available = this_kv->ring_buffer_->read((void *) chunk, STREAM_CHUNK_SIZE, pdMS_TO_TICKS(20));
       if (available > 0) {
