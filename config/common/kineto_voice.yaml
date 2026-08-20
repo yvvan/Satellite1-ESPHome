@@ -192,10 +192,14 @@ kineto_voice:
         decibel_reduction: 0
         duration: 1.0s
 
-  # A turn the user started could not be delivered: no link at wake time, the link died
-  # mid-sentence, or the gateway never answered the wake frame. Without this the device just
-  # goes quiet, which is indistinguishable from "did not hear you" — so say so out loud and
-  # show the not-ready ring. The reply itself is gone; the user has to ask again.
+  # A turn the user started reached nobody: no link at wake time, or the gateway never answered
+  # the wake frame. Without this the device just goes quiet, which is indistinguishable from "did
+  # not hear you" — so say so out loud and show the not-ready ring. The user has to ask again.
+  #
+  # Deliberately NOT fired when the link dies after the gateway has answered: the words were heard,
+  # the question is on its way to the chat with or without this socket, and the answer is queued
+  # server-side and spoken once the client reconnects a few seconds later. There the honest
+  # behaviour is silence, not a phrase about being unreachable.
   on_turn_failed:
     # This fires while the wake-word chime is still playing. Stopping that announcement and
     # starting ours in the same tick loses ours — the player is still tearing the first one down,

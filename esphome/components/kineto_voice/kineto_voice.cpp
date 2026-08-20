@@ -284,11 +284,24 @@ void KinetoVoice::loop() {
     // Whatever was left of a reply died with the socket; the rest of it is never coming.
     this->abort_reply_stream_();
     if (this->listening_.load()) {
-      // The user was mid-sentence; that turn is gone with the socket — unless we are the ones who
-      // took the socket away, in which case nothing was lost and there is nothing to announce.
+      // The user was mid-sentence, so that turn is gone with the socket. Whether to SAY so is a
+      // different question, and the answer is almost always no.
+      //
+      // We are the ones who took the socket away: nothing was lost, nothing to announce.
       const bool ours = this->expected_restart_;
+      // The gateway had answered this turn — the wake, a heartbeat, anything. Then the words were
+      // heard, the question is already on its way to the chat (the gateway queues it and retries
+      // for minutes, out of reach of this socket), and the answer is queued for us on the other
+      // side and spoken as soon as the socket is back — which the client does on its own in seconds.
+      // Announcing trouble here described a failure that was not one, and under the speech-to-speech
+      // front end it fired on every blip of a whole conversation, because the microphone stays open
+      // for all of it.
+      const bool answered = this->last_inbound_ms_.load() > this->listen_started_ms_;
       this->stop_listening_();
-      if (!ours)
+      // What is left is the turn that reached nobody: the link went before a single frame came back.
+      // The user spoke into a speaker that heard nothing, and silence there is indistinguishable
+      // from deafness — see also the wake-frame watchdog above and `start()` with no link at all.
+      if (!ours && !answered)
         this->turn_failed_callbacks_.call();
     }
     this->expected_restart_ = false;
