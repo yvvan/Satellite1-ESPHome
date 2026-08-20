@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "kineto_voice.h"
 
 #ifdef USE_ESP32
@@ -417,6 +418,9 @@ void KinetoVoice::begin_offline_capture_(const std::string &wake_word) {
     return;
   ESP_LOGD(TAG, "No link at wake (%s); recording the turn to send when there is one", wake_word.c_str());
   this->abort_reply_stream_();
+  // A second wake while the link is still down REPLACES what was kept, by decision: someone who
+  // says it again into a silent speaker is asking the same thing once, not twice, and two recordings
+  // would become two messages in the chat and two answers out loud.
   this->ring_buffer_->reset();
   this->stored_turn_pending_.store(false);
   this->offline_started_ms_ = millis();
@@ -450,6 +454,18 @@ void KinetoVoice::send_stored_turn_() {
   }
   ESP_LOGD(TAG, "Sending a stored turn: %u bytes, recorded %u ms ago", (unsigned) available,
            (unsigned) age);
+  // Copied out of the ring BEFORE anything is sent, and the ring released. The alternative — sending
+  // straight from it — shares one buffer between this send and a live utterance, and a wake word said
+  // the moment the link returns is exactly when that happens: the new sentence would go out inside
+  // the old turn and the live one would start from whatever was left. A send is also slow enough
+  // (TLS, hundreds of milliseconds) for that overlap to be likely rather than theoretical.
+  std::vector<uint8_t> recording(available);
+  size_t copied = this->ring_buffer_->read((void *) recording.data(), available, 0);
+  recording.resize(copied);
+  this->ring_buffer_->reset();
+  this->stored_turn_pending_.store(false);
+  if (copied == 0)
+    return;
   {
     // Every send from this task is fenced against the client's teardown — see client_mutex_. The
     // control frames included: send_json_ does not lock, because every other caller is the loop.
@@ -460,19 +476,18 @@ void KinetoVoice::send_stored_turn_() {
       root["sampleRate"] = 16000;
     });
     if (!opened) {
-      // The link went again. The recording stays where it is and the next connect tries again.
-      ESP_LOGW(TAG, "Could not open the stored turn; keeping it for the next link");
+      // The link went again between the check and here. The recording is already out of the ring, so
+      // there is nothing to keep it in — say so rather than pretend it was delivered.
+      ESP_LOGW(TAG, "Lost the link before the stored turn could be sent; %u bytes dropped",
+               (unsigned) copied);
       return;
     }
-    uint8_t chunk[STREAM_CHUNK_SIZE];
-    while (true) {
-      size_t read = this->ring_buffer_->read((void *) chunk, STREAM_CHUNK_SIZE, 0);
-      if (read == 0)
-        break;
+    for (size_t offset = 0; offset < copied; offset += STREAM_CHUNK_SIZE) {
+      const size_t length = std::min<size_t>(STREAM_CHUNK_SIZE, copied - offset);
       if (this->client_ == nullptr || !this->ws_connected_.load())
         break;
-      int sent = esp_websocket_client_send_bin(this->client_, (const char *) chunk, read,
-                                              WS_SEND_TIMEOUT_TICKS);
+      int sent = esp_websocket_client_send_bin(this->client_, (const char *) (recording.data() + offset),
+                                              length, WS_SEND_TIMEOUT_TICKS);
       if (sent < 0) {
         ESP_LOGW(TAG, "Stored turn stalled mid-send; the gateway will drop what arrived");
         break;
@@ -480,7 +495,6 @@ void KinetoVoice::send_stored_turn_() {
     }
     this->send_json_([](JsonObject root) { root["type"] = "stored_turn_end"; });
   }
-  this->stored_turn_pending_.store(false);
 }
 
 void KinetoVoice::stop() {
