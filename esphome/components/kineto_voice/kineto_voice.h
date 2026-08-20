@@ -228,6 +228,10 @@ class KinetoVoice : public Component {
 
   // Inbound text frames queued by the websocket task, drained by loop().
   Mutex inbound_mutex_;
+  /// Makes stream_task's send and the client's stop/destroy mutually exclusive. Every other
+  /// sender runs in the main loop with restart_client_, so only the audio task can race the
+  /// teardown — and over TLS that race walks a freed mbedtls context and reboots the device.
+  Mutex client_mutex_;
   std::deque<std::string> inbound_frames_;
 
   CallbackManager<void()> connected_callbacks_;

@@ -182,9 +182,15 @@ void KinetoVoice::restart_client_(const char *reason) {
   if (this->client_ == nullptr)
     return;
   ESP_LOGW(TAG, "Restarting websocket client: %s", reason);
-  esp_websocket_client_stop(this->client_);
-  esp_websocket_client_destroy(this->client_);
-  this->client_ = nullptr;
+  {
+    // Excludes stream_task's in-flight send — see client_mutex_'s doc. Worst case this loop
+    // iteration stalls for one send timeout; a freed TLS context under a live write reboots
+    // the whole device, which is the trade this makes.
+    LockGuard guard(this->client_mutex_);
+    esp_websocket_client_stop(this->client_);
+    esp_websocket_client_destroy(this->client_);
+    this->client_ = nullptr;
+  }
   this->ws_connected_.store(false);
   this->connect_client_();
 }
@@ -697,10 +703,17 @@ void KinetoVoice::stream_task(void *params) {
     if (this_kv->listening_.load() && this_kv->ws_connected_.load()) {
       size_t available = this_kv->ring_buffer_->read((void *) chunk, STREAM_CHUNK_SIZE, pdMS_TO_TICKS(20));
       if (available > 0) {
-        int sent = esp_websocket_client_send_bin(this_kv->client_, (const char *) chunk, available,
-                                                 WS_SEND_TIMEOUT_TICKS);
-        if (sent < 0) {
-          ESP_LOGW(TAG, "Failed to send audio chunk");
+        // Held across the send: send_bin walks the transport's TLS context, and restart_client_
+        // frees it. Unsynchronized, a reconnect mid-utterance reads freed memory and reboots the
+        // device (LoadProhibited inside mbedtls_ssl_write — seen live 2026-08-20, wss only; plain
+        // ws fails the send gracefully, which is why the local stand never caught it).
+        LockGuard guard(this_kv->client_mutex_);
+        if (this_kv->client_ != nullptr && this_kv->ws_connected_.load()) {
+          int sent = esp_websocket_client_send_bin(this_kv->client_, (const char *) chunk, available,
+                                                   WS_SEND_TIMEOUT_TICKS);
+          if (sent < 0) {
+            ESP_LOGW(TAG, "Failed to send audio chunk");
+          }
         }
       }
     } else {
