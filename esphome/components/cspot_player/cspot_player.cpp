@@ -161,6 +161,10 @@ class CSpotPlayer::Runner : public bell::Task {
     handler->setPause(paused);
   }
 
+  // Whether a transport command has anything to act on — the same predicate set_paused/next_track
+  // gate on internally, exposed so a caller can REPORT a no-op instead of silently making one.
+  bool has_session() { return this->current_handler_() != nullptr; }
+
   void next_track() {
     auto handler = this->current_handler_();
     if (handler == nullptr) {
@@ -427,6 +431,8 @@ void CSpotPlayer::set_paused(bool paused) {
     return;
   this->runner_->set_paused(paused);
 }
+
+bool CSpotPlayer::has_session() { return this->runner_ != nullptr && this->runner_->has_session(); }
 
 void CSpotPlayer::next_track() {
   if (this->runner_ == nullptr)

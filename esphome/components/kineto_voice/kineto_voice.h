@@ -61,6 +61,9 @@ class KinetoVoice : public Component {
   void stop();
   /// Send a generic {"type": "event", "kind": ..., "detail": ...} control frame.
   void send_event(const std::string &kind, const std::string &detail);
+  /// Reports a transport command this device could not act on (e.g. resume with no Spotify
+  /// session) so the gateway can hand the user's request to the agent instead of silence.
+  void send_command_failed(const std::string &command, const std::string &reason);
 
   bool is_listening() const { return this->listening_.load(); }
   /// True while a streamed reply is arriving or still being played out.

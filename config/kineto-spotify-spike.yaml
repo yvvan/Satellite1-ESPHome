@@ -82,7 +82,14 @@ kineto_voice:
   on_media_pause:
     - lambda: id(cspot_music).set_paused(true);
   on_media_resume:
-    - lambda: id(cspot_music).set_paused(false);
+    # A resume with no Spotify session is reported, not swallowed: the gateway's resume-nack
+    # window turns the report into an agent turn carrying the user's own words.
+    - lambda: |-
+        if (id(cspot_music).has_session()) {
+          id(cspot_music).set_paused(false);
+        } else {
+          id(kv).send_command_failed("resume", "nothing_to_resume");
+        }
   on_media_next:
     - lambda: id(cspot_music).next_track();
   # A media `play` frame goes to the component that owns the media speaker, so our own audio and

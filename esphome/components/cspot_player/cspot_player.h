@@ -46,6 +46,9 @@ class CSpotPlayer : public Component {
   // SpircHandler so the Spotify Connect state stays in sync across devices.
   // No-ops when no Spotify session is active.
   void set_paused(bool paused);
+  /// True when a Spotify Connect session exists for transport commands to act on — lets a
+  /// caller report "nothing to resume" instead of issuing the silent no-op set_paused makes.
+  bool has_session();
   void next_track();
 
   /**

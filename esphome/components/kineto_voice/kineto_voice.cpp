@@ -406,6 +406,18 @@ void KinetoVoice::send_event(const std::string &kind, const std::string &detail)
   });
 }
 
+void KinetoVoice::send_command_failed(const std::string &command, const std::string &reason) {
+  // The gateway turns a refused transport command into an agent turn carrying the user's own
+  // words (its resume-nack window is short, so this must go out immediately, not queued).
+  ESP_LOGW(TAG, "Command %s refused locally: %s", command.c_str(), reason.c_str());
+  this->send_json_([&command, &reason](JsonObject root) {
+    root["type"] = "event";
+    root["kind"] = "COMMAND_FAILED";
+    root["command"] = command;
+    root["reason"] = reason;
+  });
+}
+
 void KinetoVoice::handle_text_frame_(const std::string &payload) {
   bool parsed = json::parse_json(payload, [this](JsonObject root) -> bool {
     const char *type = root["type"];
