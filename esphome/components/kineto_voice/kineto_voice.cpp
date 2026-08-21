@@ -46,9 +46,11 @@ static const int SPEAKER_STOP_WAIT_STEPS = 10;
 
 static const int WS_RECONNECT_TIMEOUT_MS = 5000;  // TODO(T4): exponential backoff on top of this
 static const int WS_NETWORK_TIMEOUT_MS = 10000;
-// 3 s rather than 10: steering implementations spare clients with visible airtime, and between
-// turns this socket is otherwise silent enough to look abandoned. A ping is a handful of bytes.
-static const int WS_PING_INTERVAL_SEC = 3;
+// 10 s, and measured — not a guess. 3 s was tried on 2026-08-21 to look busier to steering
+// heuristics, and it tripled how often the pong watchdog was armed: any 20 s hiccup of the return
+// path then cut the connection, twice in sixteen minutes. The steering benefit was speculative;
+// the drops were real.
+static const int WS_PING_INTERVAL_SEC = 10;
 static const int WS_PINGPONG_TIMEOUT_SEC = 20;
 static const uint32_t WS_LIVENESS_TIMEOUT_MS = 45000;  // 4+ missed gateway heartbeats
 // How long a wake frame may go unanswered before the link counts as dead. The gateway replies
