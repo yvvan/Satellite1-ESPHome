@@ -255,6 +255,8 @@ class KinetoVoice : public Component {
   /// only a successful pairing (set_token) replaces it — and is retried periodically in case the
   /// old chat comes back.
   bool pairing_fallback_{false};
+  /// The 802.11k/v station flags are written once per boot; see enable_roaming_cooperation_().
+  bool roaming_flags_set_{false};
   uint32_t last_auth_retry_ms_{0};
   /// millis() when the current listen window opened, 0 when not listening. The gateway answers a
   /// wake frame within milliseconds, so silence past ACK_TIMEOUT means the socket is dead in a way

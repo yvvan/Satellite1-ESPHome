@@ -89,7 +89,6 @@ static const size_t TEXT_FRAGMENT_MAX_BYTES = 16 * 1024;
 
 void KinetoVoice::setup() {
   ESP_LOGCONFIG(TAG, "Setting up Kineto Voice...");
-  this->enable_roaming_cooperation_();
 
   this->ring_buffer_ = ring_buffer::RingBuffer::create(RING_BUFFER_SIZE);
   if (this->ring_buffer_ == nullptr) {
@@ -561,6 +560,8 @@ void KinetoVoice::enable_roaming_cooperation_() {
   // side is compiled in by CONFIG_ESP_WIFI_11KV_SUPPORT; these flags opt the association in.
   // Applied to the NEXT association: if WiFi is already connecting when this runs, the first link
   // predates the flags and every one after (including every steering event) has them.
+  if (this->roaming_flags_set_)
+    return;
   wifi_config_t cfg;
   if (esp_wifi_get_config(WIFI_IF_STA, &cfg) != ESP_OK) {
     ESP_LOGW(TAG, "Could not read the WiFi config; roaming cooperation not enabled");
@@ -569,6 +570,7 @@ void KinetoVoice::enable_roaming_cooperation_() {
   cfg.sta.rm_enabled = 1;
   cfg.sta.btm_enabled = 1;
   if (esp_wifi_set_config(WIFI_IF_STA, &cfg) == ESP_OK) {
+    this->roaming_flags_set_ = true;
     ESP_LOGI(TAG, "Roaming cooperation enabled (802.11k/v) for the next association");
   } else {
     ESP_LOGW(TAG, "Could not enable 802.11k/v on the station config");
@@ -585,6 +587,10 @@ void KinetoVoice::log_link_context_() {
 }
 
 void KinetoVoice::network_recovered() {
+  // Here rather than in setup(): this component sets up before esp_wifi is initialized, and the
+  // config write needs a live driver. WiFi's on_connect calls this on every association, so the
+  // flags are on the config from the first connect onward and cover every steering event after it.
+  this->enable_roaming_cooperation_();
   if (this->client_ == nullptr || this->ws_connected_.load())
     return;
   // The client's own retry timer is up to 5 s away, on top of the seconds WiFi already cost; the
