@@ -99,9 +99,17 @@ wifi:
   # mains-powered speaker streaming audio that showed up as periodic 1-1.5s
   # playback stalls (and added latency to the voice WSS).
   power_save_mode: none
+  # The mesh here (one SSID, four BSSIDs) periodically steers this client off an AP ('Auth Leave',
+  # measured 2026-08-21), and the default full scan afterwards costs ~8-10 s of the ~20 s gap.
+  # fast_connect reconnects to the stored AP without scanning; if that AP refuses, the stack falls
+  # back to a scan on the second attempt, so a genuinely-moved network still connects.
+  fast_connect: true
   on_disconnect:
     - ble.enable:
   on_connect:
+    # The other half of the gap: the websocket client's retry timer is up to 5 s away, and the
+    # network coming back is exactly what it is waiting for.
+    - lambda: id(kv).network_recovered();
     - delay: 5s  # Gives time for improv results to be transmitted
     - ble.disable:
 

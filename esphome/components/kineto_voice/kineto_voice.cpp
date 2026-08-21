@@ -69,6 +69,9 @@ constexpr const char *NVS_NAMESPACE = "kineto";
 constexpr const char *NVS_KEY_DEVICE_ID = "device_id";
 constexpr const char *NVS_KEY_TOKEN = "auth_token";
 static const int WS_SEND_TIMEOUT_TICKS = pdMS_TO_TICKS(2000);
+// Cap on a text frame reassembled from pieces. Control frames are a few hundred bytes; the only
+// big ones are pairing and set_token, and nothing legitimate approaches this.
+static const size_t TEXT_FRAGMENT_MAX_BYTES = 16 * 1024;
 
 void KinetoVoice::setup() {
   ESP_LOGCONFIG(TAG, "Setting up Kineto Voice...");
@@ -527,6 +530,15 @@ void KinetoVoice::send_stored_turn_() {
   this->reset_stored_turn_();
 }
 
+void KinetoVoice::network_recovered() {
+  if (this->client_ == nullptr || this->ws_connected_.load())
+    return;
+  // The client's own retry timer is up to 5 s away, on top of the seconds WiFi already cost; the
+  // network coming back is exactly the signal it is waiting for, so act on it instead.
+  this->expected_restart_ = true;
+  this->restart_client_("network recovered");
+}
+
 void KinetoVoice::stop() {
   if (!this->listening_.load())
     return;
@@ -690,6 +702,13 @@ void KinetoVoice::begin_reply_stream_(int sample_rate, int channels, int bits_pe
     return;
   }
   ESP_LOGD(TAG, "Reply stream starting (%d Hz, %d ch, %d bit)", sample_rate, channels, bits_per_sample);
+  // The numbers that decide whether this reply can be played at all: the audio path needs a
+  // CONTIGUOUS DMA-capable block, and "Not enough memory" from the resampler does not say which of
+  // the two ran out — the total or the largest piece (it was the largest, 2026-08-21).
+  ESP_LOGI(TAG, "[heap @ reply start] internal free=%u largest=%u",
+           (unsigned) heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+           (unsigned) heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+  this->reply_stream_generation_.fetch_add(1);
   this->reply_sample_rate_ = sample_rate;
   this->reply_channels_ = channels;
   this->reply_bits_per_sample_ = bits_per_sample;
@@ -853,14 +872,19 @@ void KinetoVoice::playback_task(void *params) {
     // Nothing buffered. While the gateway is still sending this is just the sender's pacing;
     // once it has finished, the reply is over as soon as the speaker has played out.
     if (!streaming) {
+      const uint32_t generation = this_kv->reply_stream_generation_.load();
       this_kv->announcement_speaker_->finish();
       while (this_kv->announcement_speaker_->has_buffered_data()) {
         vTaskDelay(pdMS_TO_TICKS(20));
       }
       playing = false;
       // The next stream must announce its own format; keeping this one's would let a reply at a
-      // different rate start on stale settings, which is the bug this flag exists for.
-      this_kv->reply_format_known_.store(false);
+      // different rate start on stale settings. But only if no next stream HAS announced while the
+      // speaker was draining — clearing then wipes the format that start just set, and its audio is
+      // dropped as formatless. See reply_stream_generation_.
+      if (this_kv->reply_stream_generation_.load() == generation) {
+        this_kv->reply_format_known_.store(false);
+      }
       this_kv->reply_playing_.store(false);
       this_kv->reply_finished_.store(true);
       ESP_LOGD(TAG, "Reply playback finished");
@@ -932,7 +956,8 @@ void KinetoVoice::ws_event_handler_(void *handler_args, esp_event_base_t base, i
       // 0x02 is a binary frame — reply audio; 0x00 continues one that did not fit the client's
       // receive buffer. Audio is a byte stream, so every part goes into the ring in arrival order
       // and there is nothing to reassemble. Anything binary outside a stream is not ours to play.
-      if (data->op_code == 0x02 || data->op_code == 0x00) {
+      // A 0x00 while a TEXT message is being reassembled is that message's continuation, not audio.
+      if ((data->op_code == 0x02 || data->op_code == 0x00) && !this_kv->text_fragment_open_) {
         this_kv->last_inbound_ms_.store(millis());
         // Buffered without checking whether the stream has been announced yet: `stream_start` is
         // handled by the main loop, which may not have run since it arrived, and audio dropped in
@@ -950,17 +975,47 @@ void KinetoVoice::ws_event_handler_(void *handler_args, esp_event_base_t base, i
         }
         break;
       }
-      if (data->op_code != 0x01) {
+      if (data->op_code != 0x01 && !(data->op_code == 0x00 && this_kv->text_fragment_open_)) {
         // Control frames (ping/pong/close) are the client's business, not ours.
         break;
       }
-      if (data->payload_offset != 0 || data->data_len != data->payload_len) {
-        // TODO(T4): reassemble fragmented text frames.
-        ESP_LOGW(TAG, "Dropping fragmented text frame (%d bytes)", data->payload_len);
-        break;
-      }
       this_kv->last_inbound_ms_.store(millis());
-      std::string payload(data->data_ptr, data->data_len);
+      std::string payload;
+      if (data->op_code == 0x01 && data->payload_offset == 0 && data->data_len == data->payload_len &&
+          data->fin) {
+        // The ordinary case: one whole frame in one delivery.
+        this_kv->text_fragment_open_ = false;
+        payload.assign(data->data_ptr, data->data_len);
+      } else {
+        // A frame in pieces — split by the receive buffer (payload_offset walks forward) or
+        // fragmented on the wire (continuations, fin on the last). Dropping these lost real
+        // control frames on 2026-08-21; a listen_stop or set_token can arrive this way too.
+        if (data->op_code == 0x01 && data->payload_offset == 0) {
+          this_kv->text_fragment_.clear();
+          this_kv->text_fragment_open_ = true;
+        }
+        if (!this_kv->text_fragment_open_) {
+          break;  // a tail whose beginning we never saw
+        }
+        if (this_kv->text_fragment_.size() + (size_t) data->data_len > TEXT_FRAGMENT_MAX_BYTES) {
+          ESP_LOGW(TAG, "Reassembled text frame exceeds %u bytes; dropping it",
+                   (unsigned) TEXT_FRAGMENT_MAX_BYTES);
+          this_kv->text_fragment_.clear();
+          this_kv->text_fragment_open_ = false;
+          break;
+        }
+        if (data->data_len > 0) {
+          this_kv->text_fragment_.append(data->data_ptr, data->data_len);
+        }
+        const bool frame_complete = data->payload_offset + data->data_len >= data->payload_len;
+        if (!frame_complete || !data->fin) {
+          break;  // more of this message is still coming
+        }
+        this_kv->text_fragment_open_ = false;
+        payload = std::move(this_kv->text_fragment_);
+        this_kv->text_fragment_.clear();
+        ESP_LOGD(TAG, "Reassembled a text frame from pieces (%u bytes)", (unsigned) payload.size());
+      }
       {
         LockGuard guard(this_kv->inbound_mutex_);
         this_kv->inbound_frames_.push_back(std::move(payload));

@@ -64,6 +64,9 @@ class KinetoVoice : public Component {
   /// Reports a transport command this device could not act on (e.g. resume with no Spotify
   /// session) so the gateway can hand the user's request to the agent instead of silence.
   void send_command_failed(const std::string &command, const std::string &reason);
+  /// Reconnects the websocket NOW after the network came back, instead of waiting out the client's
+  /// own retry timer. Call from the main loop only (wifi's on_connect) — see client_mutex_.
+  void network_recovered();
 
   bool is_listening() const { return this->listening_.load(); }
   /// True while a streamed reply is arriving or still being played out.
@@ -211,6 +214,18 @@ class KinetoVoice : public Component {
   std::atomic<bool> reply_abort_{false};
   /// Whether the playback task currently owns the announcement speaker.
   std::atomic<bool> reply_playing_{false};
+  /// Bumped by every stream_start. The playback task clears the format only if nothing newer has
+  /// started while it was draining — without this, a finish racing the NEXT stream's start wiped
+  /// the format that start had just announced, and the new reply was dropped as formatless
+  /// (measured 2026-08-21 10:00: three seconds of speech thrown away between back-to-back replies).
+  std::atomic<uint32_t> reply_stream_generation_{0};
+
+  /// Reassembly for a text frame that arrives in pieces — either split by the client's receive
+  /// buffer (payload_offset walks forward) or fragmented at the protocol level (continuation
+  /// frames, fin on the last). Touched only by the websocket task, so no lock. Binary needs none
+  /// of this: audio is a byte stream and every piece goes into the ring in arrival order.
+  std::string text_fragment_;
+  bool text_fragment_open_{false};
 
   std::atomic<bool> listening_{false};
   std::atomic<bool> ws_connected_{false};
