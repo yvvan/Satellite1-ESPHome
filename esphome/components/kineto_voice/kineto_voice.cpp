@@ -1,3 +1,4 @@
+#include "esp_wifi.h"
 #include "esp_system.h"
 #include "kineto_voice.h"
 
@@ -45,7 +46,9 @@ static const int SPEAKER_STOP_WAIT_STEPS = 10;
 
 static const int WS_RECONNECT_TIMEOUT_MS = 5000;  // TODO(T4): exponential backoff on top of this
 static const int WS_NETWORK_TIMEOUT_MS = 10000;
-static const int WS_PING_INTERVAL_SEC = 10;
+// 3 s rather than 10: steering implementations spare clients with visible airtime, and between
+// turns this socket is otherwise silent enough to look abandoned. A ping is a handful of bytes.
+static const int WS_PING_INTERVAL_SEC = 3;
 static const int WS_PINGPONG_TIMEOUT_SEC = 20;
 static const uint32_t WS_LIVENESS_TIMEOUT_MS = 45000;  // 4+ missed gateway heartbeats
 // How long a wake frame may go unanswered before the link counts as dead. The gateway replies
@@ -86,6 +89,7 @@ static const size_t TEXT_FRAGMENT_MAX_BYTES = 16 * 1024;
 
 void KinetoVoice::setup() {
   ESP_LOGCONFIG(TAG, "Setting up Kineto Voice...");
+  this->enable_roaming_cooperation_();
 
   this->ring_buffer_ = ring_buffer::RingBuffer::create(RING_BUFFER_SIZE);
   if (this->ring_buffer_ == nullptr) {
@@ -548,6 +552,27 @@ void KinetoVoice::send_stored_turn_() {
     this->send_json_([](JsonObject root) { root["type"] = "stored_turn_end"; });
   }
   this->reset_stored_turn_();
+}
+
+void KinetoVoice::enable_roaming_cooperation_() {
+  // Answer the network's roaming machinery instead of ignoring it. A mesh that wants this client
+  // elsewhere first asks (802.11v BSS transition, backed by 802.11k reports); a client that never
+  // answers gets the fallback — deauthentication, 'Auth Leave', and a rebuilt link. The supplicant
+  // side is compiled in by CONFIG_ESP_WIFI_11KV_SUPPORT; these flags opt the association in.
+  // Applied to the NEXT association: if WiFi is already connecting when this runs, the first link
+  // predates the flags and every one after (including every steering event) has them.
+  wifi_config_t cfg;
+  if (esp_wifi_get_config(WIFI_IF_STA, &cfg) != ESP_OK) {
+    ESP_LOGW(TAG, "Could not read the WiFi config; roaming cooperation not enabled");
+    return;
+  }
+  cfg.sta.rm_enabled = 1;
+  cfg.sta.btm_enabled = 1;
+  if (esp_wifi_set_config(WIFI_IF_STA, &cfg) == ESP_OK) {
+    ESP_LOGI(TAG, "Roaming cooperation enabled (802.11k/v) for the next association");
+  } else {
+    ESP_LOGW(TAG, "Could not enable 802.11k/v on the station config");
+  }
 }
 
 void KinetoVoice::log_link_context_() {

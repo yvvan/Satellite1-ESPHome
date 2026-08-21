@@ -50,6 +50,11 @@ esp32:
       # Without this the ESP-IDF logs above DEBUG are stripped at compile time, so the network
       # client's own account of a dropped socket never reaches the log at all.
       CONFIG_LOG_MAXIMUM_LEVEL_DEBUG: "y"
+      # Speak the mesh's roaming language (802.11k neighbor reports + 802.11v BSS transition).
+      # A mesh steers clients it can talk to with a polite transition request, and deauthenticates
+      # the ones it cannot — which is what every 'Auth Leave' drop in this room was. The flags on
+      # the station config (rm/btm) are set by kineto_voice; this compiles the supplicant half in.
+      CONFIG_ESP_WIFI_11KV_SUPPORT: "y"
 
 # Dev only: the device has no screen and its USB port resets it on connect, so this is the only
 # way to read its own account of a dropped link. Nothing connects to it but `esphome logs`.

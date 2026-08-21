@@ -139,6 +139,7 @@ class KinetoVoice : public Component {
   void end_offline_capture_();
   void reset_stored_turn_();
   void log_link_context_();
+  void enable_roaming_cooperation_();
   void keep_turn_for_later_(const char *why);
   /// Sends what was kept and clears it. Runs on the audio task — see client_mutex_.
   void send_stored_turn_();
