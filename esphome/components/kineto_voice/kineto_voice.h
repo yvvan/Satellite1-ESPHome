@@ -138,6 +138,7 @@ class KinetoVoice : public Component {
   void begin_offline_capture_(const std::string &wake_word);
   void end_offline_capture_();
   void reset_stored_turn_();
+  void log_link_context_();
   void keep_turn_for_later_(const char *why);
   /// Sends what was kept and clears it. Runs on the audio task — see client_mutex_.
   void send_stored_turn_();

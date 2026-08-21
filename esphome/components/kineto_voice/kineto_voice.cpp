@@ -1,3 +1,4 @@
+#include "esp_system.h"
 #include "kineto_voice.h"
 
 #ifdef USE_ESP32
@@ -311,6 +312,7 @@ void KinetoVoice::loop() {
   }
   if (connected && !this->was_ws_connected_) {
     this->was_ws_connected_ = true;
+    this->log_link_context_();
     this->send_hello_();
   } else if (!connected && this->was_ws_connected_) {
     this->was_ws_connected_ = false;
@@ -376,7 +378,15 @@ bool KinetoVoice::send_json_(const json::json_build_t &func) {
     return false;
   }
   auto buffer = json::build_json(func);
+  const uint32_t before = millis();
   int sent = esp_websocket_client_send_text(this->client_, buffer.data(), buffer.size(), WS_SEND_TIMEOUT_TICKS);
+  const uint32_t took = millis() - before;
+  if (sent >= 0 && (sent < (int) buffer.size() || took > 500)) {
+    // Same reasoning as the mic path: a short or slow control send is a stalling socket, and a
+    // control frame lost this way is a listen_stop or a wake that silently never happened.
+    ESP_LOGW(TAG, "Control send: sent=%d of %u in %u ms (errno=%d)", sent, (unsigned) buffer.size(),
+             (unsigned) took, errno);
+  }
   if (sent < 0) {
     ESP_LOGW(TAG, "Failed to send control frame");
     return false;
@@ -528,6 +538,15 @@ void KinetoVoice::send_stored_turn_() {
     this->send_json_([](JsonObject root) { root["type"] = "stored_turn_end"; });
   }
   this->reset_stored_turn_();
+}
+
+void KinetoVoice::log_link_context_() {
+  // One line per established link, so any later drop can be read against what preceded it —
+  // a fresh boot, an OTA, a brownout — without the serial capture having been there to see it.
+  ESP_LOGI(TAG, "[link up] uptime=%us reset=%d internal free=%u largest=%u",
+           (unsigned) (millis() / 1000), (int) esp_reset_reason(),
+           (unsigned) heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+           (unsigned) heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
 }
 
 void KinetoVoice::network_recovered() {
@@ -912,10 +931,18 @@ void KinetoVoice::stream_task(void *params) {
         // ws fails the send gracefully, which is why the local stand never caught it).
         LockGuard guard(this_kv->client_mutex_);
         if (this_kv->client_ != nullptr && this_kv->ws_connected_.load()) {
+          const uint32_t before = millis();
           int sent = esp_websocket_client_send_bin(this_kv->client_, (const char *) chunk, available,
                                                    WS_SEND_TIMEOUT_TICKS);
-          if (sent < 0) {
-            ESP_LOGW(TAG, "Failed to send audio chunk");
+          const uint32_t took = millis() - before;
+          // `sent < 0` alone missed the failure that matters: on a send timeout the client ABORTS
+          // the whole connection and returns the bytes it managed — a non-negative number. A send
+          // that returned short, or took a large slice of its 2 s budget, is the socket stalling,
+          // and it is the prime suspect for the silent mid-utterance drops of 2026-08-21.
+          if (sent < 0 || sent < (int) available || took > 500) {
+            ESP_LOGW(TAG, "Mic send: sent=%d of %u in %u ms (errno=%d, connected=%d)", sent,
+                     (unsigned) available, (unsigned) took, errno,
+                     (int) this_kv->ws_connected_.load());
           }
         }
       }
@@ -939,6 +966,26 @@ void KinetoVoice::ws_event_handler_(void *handler_args, esp_event_base_t base, i
     case WEBSOCKET_EVENT_ERROR:
       if (this_kv->ws_connected_.load()) {
         ESP_LOGD(TAG, "WebSocket disconnected");
+      }
+      // Everything the client knows about WHY, which it knows exactly and we used to throw away.
+      // error_type alone separates the classes a bare "disconnected" line lumped together: a pong
+      // timeout, a server-initiated close, a TCP/TLS transport failure, a refused handshake.
+      if (data != nullptr) {
+        static const char *ERROR_TYPES[] = {"none", "tcp_transport", "pong_timeout", "handshake",
+                                            "server_close"};
+        const int et = (int) data->error_handle.error_type;
+        ESP_LOGW(TAG,
+                 "WS %s: type=%s tls_err=0x%x tls_stack=0x%x sock_errno=%d http_status=%d "
+                 "(task=%s, uptime=%us)",
+                 event_id == WEBSOCKET_EVENT_ERROR ? "error" : "close",
+                 (et >= 0 && et <= 4) ? ERROR_TYPES[et] : "?",
+                 (unsigned) data->error_handle.esp_tls_last_esp_err,
+                 (unsigned) data->error_handle.esp_tls_stack_err,
+                 data->error_handle.esp_transport_sock_errno,
+                 data->error_handle.esp_ws_handshake_status_code,
+                 pcTaskGetName(nullptr), (unsigned) (millis() / 1000));
+      }
+      if (this_kv->ws_connected_.load()) {
         // Counts a session that died before hello_ack; the ack handler resets it. Only sessions
         // that actually CONNECTED count — a gateway that is down never completes the connect, so
         // this pattern is specific to "accepted, then thrown out".
@@ -953,6 +1000,15 @@ void KinetoVoice::ws_event_handler_(void *handler_args, esp_event_base_t base, i
       this_kv->ws_connected_.store(false);
       break;
     case WEBSOCKET_EVENT_DATA: {
+      // A close frame carries the server's reason in its first two bytes; without this a close
+      // initiated by the gateway or the balancer is indistinguishable from the client's own abort.
+      if (data->op_code == 0x08) {
+        const int code = data->data_len >= 2
+            ? ((uint8_t) data->data_ptr[0] << 8) | (uint8_t) data->data_ptr[1] : 0;
+        ESP_LOGW(TAG, "WS close frame from the server: code=%d payload=%d bytes", code,
+                 data->data_len);
+        break;
+      }
       // 0x02 is a binary frame — reply audio; 0x00 continues one that did not fit the client's
       // receive buffer. Audio is a byte stream, so every part goes into the ring in arrival order
       // and there is nothing to reassemble. Anything binary outside a stream is not ours to play.
