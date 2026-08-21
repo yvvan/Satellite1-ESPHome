@@ -32,8 +32,15 @@ esp32:
       # ALWAYSINTERNAL threshold land in the 8MB PSRAM, small/DMA ones stay internal.
       CONFIG_SPIRAM_USE_CAPS_ALLOC: "n"
       CONFIG_SPIRAM_USE_MALLOC: "y"
-      CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL: "2048"
-      CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL: "32768"
+      # 512, not 2048: every allocation between the two sizes now lands in PSRAM instead of
+      # carving up internal DRAM. What matters internally is not how much is free but whether a
+      # CONTIGUOUS block is — the reply resampler asks for one DMA-capable chunk, and on
+      # 2026-08-21 it failed with 34 KB free and a largest block of 23.5 KB, while the day before
+      # it succeeded with 26 KB free. Fragmentation, not exhaustion.
+      CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL: "512"
+      # Doubled: this is the internal floor plain malloc may not touch, which is what leaves room
+      # for the DMA-capable requests the audio path makes when a reply starts.
+      CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL: "65536"
       # MBEDTLS_DYNAMIC_BUFFER is deliberately ABSENT (removed 2026-08-20 after three field
       # crashes): the dynamic port frees the rx record buffer between records while
       # ssl_check_ctr_renegotiate on the WRITE path still reads a counter inside it, so any
