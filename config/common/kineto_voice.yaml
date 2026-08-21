@@ -192,13 +192,13 @@ kineto_voice:
         decibel_reduction: 0
         duration: 1.0s
 
-  # A turn the user started reached nobody AND could not be kept: the gateway never answered the
-  # wake frame, so the words were streamed into a socket that was not listening. Without this the
-  # device just goes quiet, which is indistinguishable from "did not hear you".
+  # The last case with anything to say: a question the microphone kept was never asked and now never
+  # will be — the link stayed down past the keeping window. Silence there would be the speaker
+  # forgetting something the user is still waiting for.
   #
-  # No link at wake is NOT this any more: with nothing to stream into, the words are recorded and
-  # sent when the socket comes back (see `capturing_offline_`), so there is nothing to apologise
-  # for — the ring lights, the question goes late, and the answer arrives by itself.
+  # Everything else is silent now. No link at wake, a wake frame the gateway never answered, a link
+  # that died mid-sentence: the words are kept and asked again on the next socket, so those are
+  # delays rather than failures and there is nothing to announce.
   #
   # Deliberately NOT fired when the link dies after the gateway has answered: the words were heard,
   # the question is on its way to the chat with or without this socket, and the answer is queued

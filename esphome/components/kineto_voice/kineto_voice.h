@@ -134,7 +134,9 @@ class KinetoVoice : public Component {
   void restart_client_(const char *reason);
   void begin_offline_capture_(const std::string &wake_word);
   void end_offline_capture_();
-  /// Sends the recording and clears it. Runs on the audio task — see client_mutex_.
+  void reset_stored_turn_();
+  void keep_turn_for_later_(const char *why);
+  /// Sends what was kept and clears it. Runs on the audio task — see client_mutex_.
   void send_stored_turn_();
   /// Reads one string from the kineto NVS namespace; empty when absent.
   std::string load_stored_identity_(const char *key);
@@ -176,6 +178,15 @@ class KinetoVoice : public Component {
   esp_websocket_client_handle_t client_{nullptr};
 
   std::unique_ptr<ring_buffer::RingBuffer> ring_buffer_;
+  /**
+   * A copy of the turn being spoken right now, kept until the gateway proves it heard it.
+   *
+   * Its own buffer rather than a snapshot of [ring_buffer_]: a snapshot meant allocating the whole
+   * recording at the moment of sending, and on this chip that is a quarter of a megabyte out of an
+   * internal heap with tens of kilobytes free — an abort, with exceptions compiled out. Allocated
+   * once at boot, in PSRAM like every other audio buffer here, and drained straight to the socket.
+   */
+  std::unique_ptr<ring_buffer::RingBuffer> stored_ring_;
   TaskHandle_t stream_task_handle_{nullptr};
 
   /// Received reply audio, waiting to be played. Sized for several seconds so a Wi-Fi stall does

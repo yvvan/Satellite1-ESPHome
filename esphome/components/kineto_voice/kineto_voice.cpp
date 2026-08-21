@@ -1,4 +1,3 @@
-#include <algorithm>
 #include "kineto_voice.h"
 
 #ifdef USE_ESP32
@@ -51,6 +50,11 @@ static const uint32_t LISTEN_ACK_TIMEOUT_MS = 15000;
 // 16 kHz mono — and a question asked of a speaker is shorter than that; the tail is trimmed by the
 // transcriber anyway, so this is a cap and not a measurement of when the sentence ended.
 static const uint32_t OFFLINE_CAPTURE_MS = 7000;
+// The kept copy of a turn: eight seconds of 16 kHz mono 16-bit, which is longer than anything said
+// to a speaker and one second more than OFFLINE_CAPTURE_MS. Deliberately NOT the microphone ring's
+// size — that one holds half a second, because everything in it is streamed out as it arrives.
+// PSRAM, like every audio buffer here (RingBuffer::create prefers external memory).
+static const size_t STORED_RING_SIZE = 8 * 16000 * sizeof(int16_t);
 // How stale such a recording may be when the link returns. The gateway enforces its own, wider
 // window; this one only avoids spending a burst of TLS on something that will certainly be dropped.
 static const uint32_t STORED_TURN_MAX_AGE_MS = 170000;
@@ -74,6 +78,12 @@ void KinetoVoice::setup() {
     ESP_LOGE(TAG, "Failed to allocate audio ring buffer");
     this->mark_failed();
     return;
+  }
+  this->stored_ring_ = ring_buffer::RingBuffer::create(STORED_RING_SIZE);
+  if (this->stored_ring_ == nullptr) {
+    // Not fatal: without it a turn the gateway never answered is simply lost, which is how this
+    // device behaved until now. Everything else still works.
+    ESP_LOGE(TAG, "Failed to allocate the stored-turn buffer; a lost turn cannot be kept");
   }
 
   this->microphone_->add_data_callback([this](const std::vector<uint8_t> &data) { this->on_mic_data_(data); });
@@ -289,7 +299,10 @@ void KinetoVoice::loop() {
     ESP_LOGW(TAG, "No gateway response to the wake frame in %u ms; treating the link as dead",
              (unsigned) (millis() - this->listen_started_ms_));
     this->stop_listening_();
-    this->turn_failed_callbacks_.call();
+    // The words went into a socket that was not listening — but the microphone kept them, so this is
+    // a delay and not a failure, and there is nothing to announce. The copy goes out on the next
+    // link, which the restart below is about to fetch.
+    this->keep_turn_for_later_("the gateway never answered the wake frame");
     this->restart_client_("no gateway response to the wake frame");
     return;
   }
@@ -316,11 +329,12 @@ void KinetoVoice::loop() {
       // for all of it.
       const bool answered = this->last_inbound_ms_.load() > this->listen_started_ms_;
       this->stop_listening_();
-      // What is left is the turn that reached nobody: the link went before a single frame came back.
-      // The user spoke into a speaker that heard nothing, and silence there is indistinguishable
-      // from deafness — see also the wake-frame watchdog above and `start()` with no link at all.
+      // The turn that reached nobody: the link went before a single frame came back. The words are
+      // kept and asked again on the next socket, so this too is silent. A turn the gateway HAD
+      // answered is left alone — it is already being dealt with on the other side, and asking it
+      // again would be a second question and a second answer.
       if (!ours && !answered)
-        this->turn_failed_callbacks_.call();
+        this->keep_turn_for_later_("the link died before the gateway answered");
     }
     this->expected_restart_ = false;
     this->disconnected_callbacks_.call();
@@ -398,6 +412,8 @@ void KinetoVoice::start(const std::string &wake_word) {
   }
 
   ESP_LOGD(TAG, "Start listening (wake word: %s)", wake_word.c_str());
+  // This turn replaces whatever the last one left behind: a question asked again is asked once.
+  this->reset_stored_turn_();
   // The user is talking again, so the previous answer has lost its audience — and leaving it
   // playing would put the speaker's own voice into the microphone.
   this->abort_reply_stream_();
@@ -421,8 +437,7 @@ void KinetoVoice::begin_offline_capture_(const std::string &wake_word) {
   // A second wake while the link is still down REPLACES what was kept, by decision: someone who
   // says it again into a silent speaker is asking the same thing once, not twice, and two recordings
   // would become two messages in the chat and two answers out loud.
-  this->ring_buffer_->reset();
-  this->stored_turn_pending_.store(false);
+  this->reset_stored_turn_();
   this->offline_started_ms_ = millis();
   this->capturing_offline_.store(true);
   this->microphone_->start();
@@ -435,37 +450,49 @@ void KinetoVoice::end_offline_capture_() {
   this->capturing_offline_.store(false);
   this->microphone_->stop();
   this->listening_stop_callbacks_.call();
+  this->keep_turn_for_later_("recorded with no link");
+}
+
+void KinetoVoice::reset_stored_turn_() {
+  this->stored_turn_pending_.store(false);
+  if (this->stored_ring_ != nullptr)
+    this->stored_ring_->reset();
+}
+
+/// Marks what the microphone kept as a question still to be asked. Silent by design: the user is
+/// told nothing, because nothing is lost yet — the words go out as soon as there is a socket.
+void KinetoVoice::keep_turn_for_later_(const char *why) {
+  if (this->stored_ring_ == nullptr)
+    return;
+  const size_t kept = this->stored_ring_->available();
+  if (kept == 0)
+    return;
   this->stored_turn_ended_ms_.store(millis());
   this->stored_turn_pending_.store(true);
-  ESP_LOGD(TAG, "Offline turn recorded (%u bytes); waiting for a link",
-           (unsigned) this->ring_buffer_->available());
+  ESP_LOGD(TAG, "Keeping %u bytes to ask later (%s)", (unsigned) kept, why);
 }
 
 void KinetoVoice::send_stored_turn_() {
   this->flush_stored_turn_.store(false);
+  if (this->stored_ring_ == nullptr)
+    return;
   const uint32_t age = millis() - this->stored_turn_ended_ms_.load();
-  size_t available = this->ring_buffer_->available();
-  if (age > STORED_TURN_MAX_AGE_MS || available == 0) {
-    if (available > 0)
-      ESP_LOGW(TAG, "Dropping a recording %u s old; too late to ask", (unsigned) (age / 1000));
-    this->ring_buffer_->reset();
+  size_t available = this->stored_ring_->available();
+  if (available == 0) {
     this->stored_turn_pending_.store(false);
     return;
   }
-  ESP_LOGD(TAG, "Sending a stored turn: %u bytes, recorded %u ms ago", (unsigned) available,
-           (unsigned) age);
-  // Copied out of the ring BEFORE anything is sent, and the ring released. The alternative — sending
-  // straight from it — shares one buffer between this send and a live utterance, and a wake word said
-  // the moment the link returns is exactly when that happens: the new sentence would go out inside
-  // the old turn and the live one would start from whatever was left. A send is also slow enough
-  // (TLS, hundreds of milliseconds) for that overlap to be likely rather than theoretical.
-  std::vector<uint8_t> recording(available);
-  size_t copied = this->ring_buffer_->read((void *) recording.data(), available, 0);
-  recording.resize(copied);
-  this->ring_buffer_->reset();
-  this->stored_turn_pending_.store(false);
-  if (copied == 0)
+  if (age > STORED_TURN_MAX_AGE_MS) {
+    // The one thing still worth saying out loud, and the only caller of on_turn_failed left: the
+    // question was never asked and now never will be. Silence here would be the speaker forgetting
+    // something the user is still waiting on, which is worse than saying so late.
+    ESP_LOGW(TAG, "A question kept %u s ago was never asked; giving up on it", (unsigned) (age / 1000));
+    this->reset_stored_turn_();
+    this->turn_failed_callbacks_.call();
     return;
+  }
+  ESP_LOGD(TAG, "Asking a kept question: %u bytes, recorded %u ms ago", (unsigned) available,
+           (unsigned) age);
   {
     // Every send from this task is fenced against the client's teardown — see client_mutex_. The
     // control frames included: send_json_ does not lock, because every other caller is the loop.
@@ -476,25 +503,28 @@ void KinetoVoice::send_stored_turn_() {
       root["sampleRate"] = 16000;
     });
     if (!opened) {
-      // The link went again between the check and here. The recording is already out of the ring, so
-      // there is nothing to keep it in — say so rather than pretend it was delivered.
-      ESP_LOGW(TAG, "Lost the link before the stored turn could be sent; %u bytes dropped",
-               (unsigned) copied);
+      // The link went again. What was kept stays kept, and the next connect tries again.
+      ESP_LOGW(TAG, "Could not open the kept question; holding on to it");
+      this->stored_turn_pending_.store(true);
       return;
     }
-    for (size_t offset = 0; offset < copied; offset += STREAM_CHUNK_SIZE) {
-      const size_t length = std::min<size_t>(STREAM_CHUNK_SIZE, copied - offset);
+    uint8_t chunk[STREAM_CHUNK_SIZE];
+    while (true) {
+      size_t read = this->stored_ring_->read((void *) chunk, STREAM_CHUNK_SIZE, 0);
+      if (read == 0)
+        break;
       if (this->client_ == nullptr || !this->ws_connected_.load())
         break;
-      int sent = esp_websocket_client_send_bin(this->client_, (const char *) (recording.data() + offset),
-                                              length, WS_SEND_TIMEOUT_TICKS);
+      int sent = esp_websocket_client_send_bin(this->client_, (const char *) chunk, read,
+                                              WS_SEND_TIMEOUT_TICKS);
       if (sent < 0) {
-        ESP_LOGW(TAG, "Stored turn stalled mid-send; the gateway will drop what arrived");
+        ESP_LOGW(TAG, "Kept question stalled mid-send; the gateway will drop what arrived");
         break;
       }
     }
     this->send_json_([](JsonObject root) { root["type"] = "stored_turn_end"; });
   }
+  this->reset_stored_turn_();
 }
 
 void KinetoVoice::stop() {
@@ -712,9 +742,20 @@ void KinetoVoice::on_mic_data_(const std::vector<uint8_t> &data) {
     converted.push_back(static_cast<int16_t>(samples[i * channels] >> 16));
   }
 
-  size_t written = this->ring_buffer_->write(converted.data(), converted.size() * sizeof(int16_t));
-  if (written < converted.size() * sizeof(int16_t)) {
-    ESP_LOGV(TAG, "Audio ring buffer overflow, oldest samples dropped");
+  const size_t bytes = converted.size() * sizeof(int16_t);
+  if (live) {
+    size_t written = this->ring_buffer_->write(converted.data(), bytes);
+    if (written < bytes) {
+      ESP_LOGV(TAG, "Audio ring buffer overflow, oldest samples dropped");
+    }
+  }
+  // Kept as well as sent. A turn streamed into a socket that turns out to be dead is gone otherwise,
+  // and that socket — half-open, still connected as far as this device knows — is how this link
+  // fails most often. The copy is what lets the question be asked again without the user repeating
+  // it. Bounded by the buffer: past eight seconds the newest samples are dropped, and the beginning
+  // of the sentence is the half worth keeping.
+  if (this->stored_ring_ != nullptr) {
+    this->stored_ring_->write_without_replacement(converted.data(), bytes, 0);
   }
 }
 
