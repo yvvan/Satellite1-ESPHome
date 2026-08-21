@@ -17,7 +17,11 @@ namespace kineto_voice {
 static const char *const TAG = "kineto_voice";
 
 // 16-bit 16 kHz mono outbound stream: 32000 bytes/s, keep ~500 ms of audio buffered.
-static const size_t RING_BUFFER_SIZE = 16000;
+// Four seconds of microphone, not half a second: the words spoken WHILE an uplink send is riding
+// out a downstream burst (see WS_SEND_TIMEOUT_TICKS) have to wait somewhere, and at 16 KB the ring
+// dropped them — the connection survived and the middle of the sentence did not. PSRAM, like every
+// audio buffer here.
+static const size_t RING_BUFFER_SIZE = 128000;
 static const size_t STREAM_CHUNK_SIZE = 1024;
 
 static const size_t STREAM_TASK_STACK_SIZE = 4096;
@@ -69,7 +73,13 @@ static const uint32_t UNACKED_DROPS_FOR_REFUSAL = 3;
 constexpr const char *NVS_NAMESPACE = "kineto";
 constexpr const char *NVS_KEY_DEVICE_ID = "device_id";
 constexpr const char *NVS_KEY_TOKEN = "auth_token";
-static const int WS_SEND_TIMEOUT_TICKS = pdMS_TO_TICKS(2000);
+// 6 s, and the number is load-bearing: while the gateway pushes a reply downstream (a paced burst
+// up to two seconds ahead of real time), the mesh's airtime is saturated and an uplink mic chunk
+// can sit unsendable for seconds. On a send timeout the client does not just fail the call — it
+// ABORTS the whole connection, which was the silent mid-utterance drop class of 2026-08-21
+// (caught live: sent=0 of 512 in 2003 ms, then tcp_transport close). The timeout must outlast the
+// downstream lead with room to spare.
+static const int WS_SEND_TIMEOUT_TICKS = pdMS_TO_TICKS(6000);
 // Cap on a text frame reassembled from pieces. Control frames are a few hundred bytes; the only
 // big ones are pairing and set_token, and nothing legitimate approaches this.
 static const size_t TEXT_FRAGMENT_MAX_BYTES = 16 * 1024;
