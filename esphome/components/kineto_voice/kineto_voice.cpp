@@ -22,7 +22,9 @@ static const char *const TAG = "kineto_voice";
 // out a downstream burst (see WS_SEND_TIMEOUT_TICKS) have to wait somewhere, and at 16 KB the ring
 // dropped them — the connection survived and the middle of the sentence did not. PSRAM, like every
 // audio buffer here.
-static const size_t RING_BUFFER_SIZE = 128000;
+// Sixteen seconds of microphone — one second more than the send timeout above, because a survived
+// stall is pointless if the ring overflowed while waiting. PSRAM, megabytes free.
+static const size_t RING_BUFFER_SIZE = 512000;
 static const size_t STREAM_CHUNK_SIZE = 1024;
 
 static const size_t STREAM_TASK_STACK_SIZE = 4096;
@@ -84,7 +86,10 @@ constexpr const char *NVS_KEY_TOKEN = "auth_token";
 // ABORTS the whole connection, which was the silent mid-utterance drop class of 2026-08-21
 // (caught live: sent=0 of 512 in 2003 ms, then tcp_transport close). The timeout must outlast the
 // downstream lead with room to spare.
-static const int WS_SEND_TIMEOUT_TICKS = pdMS_TO_TICKS(6000);
+// 15 s: six was measured insufficient on 2026-08-22 (a stall of 6003 ms killed a live turn), and
+// the pong watchdog at 20 s is the real ceiling anyway. The mic ring below is sized to hold the
+// words spoken across the whole wait.
+static const int WS_SEND_TIMEOUT_TICKS = pdMS_TO_TICKS(15000);
 // Cap on a text frame reassembled from pieces. Control frames are a few hundred bytes; the only
 // big ones are pairing and set_token, and nothing legitimate approaches this.
 static const size_t TEXT_FRAGMENT_MAX_BYTES = 16 * 1024;
