@@ -105,13 +105,29 @@ wifi:
   # back to a scan on the second attempt, so a genuinely-moved network still connects.
   fast_connect: true
   on_disconnect:
-    - ble.enable:
+    # Not `ble.enable` directly: see the ble_provisioning_grace script.
+    - script.execute: ble_provisioning_grace
   on_connect:
     # The other half of the gap: the websocket client's retry timer is up to 5 s away, and the
     # network coming back is exactly what it is waiting for.
     - lambda: id(kv).network_recovered();
+    - script.stop: ble_provisioning_grace
     - delay: 5s  # Gives time for improv results to be transmitted
     - ble.disable:
+
+# Bluetooth is only ever for handing this speaker a network it does not have (esp32_improv, below),
+# so a drop has to persist before it counts as that request. Enabling the BT controller in the same
+# instant the WiFi radio is torn down asserted inside the radio-coexistence module and hung CPU0
+# with interrupts off — Interrupt WDT, panic, reboot (measured 2026-08-22 23:45, one crash in
+# seventeen enables). Someone who genuinely needs to provision never gets the network back, so a
+# minute costs them nothing, while this mesh's routine 5-20 s evictions stop touching the radio at
+# all. `restart` mode plus the stop in on_connect mean a reconnect inside the minute cancels it.
+script:
+  - id: ble_provisioning_grace
+    mode: restart
+    then:
+      - delay: 60s
+      - ble.enable:
 
 esp32_improv:
   authorizer: btn_action
