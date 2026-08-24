@@ -435,6 +435,8 @@ void KinetoVoice::send_hello_() {
     // first and needs an answer, and it asks only devices that say they can — so a gateway newer
     // than this firmware stays quiet instead of asking a question nobody could answer.
     capabilities.add("listen_start_v1");
+    // Our own reply can be dropped without stopping the music under it; see the drop_reply handler.
+    capabilities.add("drop_reply_v1");
   });
 }
 
@@ -732,6 +734,11 @@ void KinetoVoice::handle_text_frame_(const std::string &payload) {
       // announces the end itself once the speaker has actually run dry.
       ESP_LOGD(TAG, "Reply stream complete");
       this->reply_streaming_.store(false);
+    } else if (strcmp(type, "drop_reply") == 0) {
+      // Only our own voice. Sent when the user talks over the assistant, where `stop` used to be
+      // sent instead — and `stop` silences everything audible, so barging in also paused the music
+      // underneath and left it paused. Interrupting a sentence is not a request to end the music.
+      this->abort_reply_stream_();
     } else if (strcmp(type, "stop") == 0) {
       this->abort_reply_stream_();
       // Stop whatever is audible: the media_player pipeline (radio/announcement
