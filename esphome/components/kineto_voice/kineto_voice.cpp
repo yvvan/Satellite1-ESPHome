@@ -53,6 +53,10 @@ static const int WS_NETWORK_TIMEOUT_MS = 10000;
 // path then cut the connection, twice in sixteen minutes. The steering benefit was speculative;
 // the drops were real.
 static const int WS_PING_INTERVAL_SEC = 10;
+
+// What the wake frame says when the gateway, not a wake word, opened the microphone. It reaches
+// the logs on both sides, which is the difference between "the user asked" and "we asked".
+static const char *const LISTEN_START_WAKE = "gateway";
 static const int WS_PINGPONG_TIMEOUT_SEC = 20;
 static const uint32_t WS_LIVENESS_TIMEOUT_MS = 45000;  // 4+ missed gateway heartbeats
 // How long a wake frame may go unanswered before the link counts as dead. The gateway replies
@@ -427,6 +431,10 @@ void KinetoVoice::send_hello_() {
     if (this->accepts_audio_stream_()) {
       capabilities.add("audio_stream_v1");
     }
+    // The gateway may open the microphone itself (listen_start). It only does so when it spoke
+    // first and needs an answer, and it asks only devices that say they can — so a gateway newer
+    // than this firmware stays quiet instead of asking a question nobody could answer.
+    capabilities.add("listen_start_v1");
   });
 }
 
@@ -656,6 +664,11 @@ void KinetoVoice::handle_text_frame_(const std::string &payload) {
       this->hello_acked_ = true;
       this->unacked_drops_.store(0);
       this->connected_callbacks_.call();
+    } else if (strcmp(type, "listen_start") == 0) {
+      // Deliberately the same path a wake word takes, wake frame included: one listening state
+      // machine, so the gateway's view of a turn cannot diverge from the device's.
+      ESP_LOGD(TAG, "Backend asked to listen");
+      this->start(LISTEN_START_WAKE);
     } else if (strcmp(type, "listen_stop") == 0) {
       ESP_LOGD(TAG, "Backend requested listen stop");
       if (this->listening_.load()) {
