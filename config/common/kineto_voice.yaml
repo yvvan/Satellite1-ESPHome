@@ -84,13 +84,25 @@ micro_wake_word:
                 switch.is_on: timer_ringing
               then:
                 - switch.turn_off: timer_ringing
-              # Stop the current Kineto listening session if one is running
+              # Already listening? Then there is nothing to start, and only the model that exists
+              # to stop things may end it. The wake word used to end it too — harmless when
+              # listening was a short window, wrong now that a conversation stays open for its
+              # whole length: any second detection inside one killed the question in flight,
+              # silently. Measured 2026-08-24 — the wake word fired again 2.5 s into a question,
+              # the microphone closed, and the gateway sat through ten seconds of silence and
+              # closed the turn. It broke the honest case too: saying the wake word again because
+              # you think you were not heard is a request for attention, not for the conversation
+              # to end.
               else:
                 - if:
                     condition:
                       lambda: return id(kv).is_listening();
                     then:
-                      - kineto_voice.stop:
+                      - if:
+                          condition:
+                            lambda: return wake_word == "Stop";
+                          then:
+                            - kineto_voice.stop:
                     # Shut up whatever the device is saying — a downloaded announcement or a
                     # reply streamed straight into the announcement speaker. The streamed one has
                     # to be named separately: it bypasses the media_player, so is_announcing says
