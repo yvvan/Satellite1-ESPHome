@@ -214,6 +214,17 @@ class KinetoVoice : public Component {
   /// Asks the playback task to cut the current reply short. Every call into the speaker is left to
   /// that one task, so silencing it from elsewhere is a request rather than an action.
   std::atomic<bool> reply_abort_{false};
+  /**
+   * Which stream the pending abort belongs to.
+   *
+   * The abort is a flag for the playback task, so it is applied whenever that task next runs — and a
+   * reply that starts in between (the model answering the interruption immediately) was having the
+   * abort applied to IT: the chunk in hand discarded and the speaker stopped and restarted a few
+   * bytes into the new audio. A 16-bit stream restarted off a sample boundary is a hiss, which is
+   * what the room heard on 2026-08-25. Stamped here, checked there: an abort older than the current
+   * stream is not this stream's business.
+   */
+  std::atomic<uint32_t> reply_abort_generation_{0};
   /// Whether the playback task currently owns the announcement speaker.
   std::atomic<bool> reply_playing_{false};
   /// Bumped by every stream_start. The playback task clears the format only if nothing newer has

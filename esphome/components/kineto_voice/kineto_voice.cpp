@@ -816,6 +816,9 @@ void KinetoVoice::abort_reply_stream_() {
   ESP_LOGD(TAG, "Dropping the reply stream");
   this->reply_streaming_.store(false);
   this->reply_buffer_->reset();
+  // Stamped with the stream it applies to; a reply that begins before the playback task gets to it
+  // must not be torn down by it. See reply_abort_generation_.
+  this->reply_abort_generation_.store(this->reply_stream_generation_.load());
   this->reply_abort_.store(true);
 }
 
@@ -878,9 +881,17 @@ void KinetoVoice::playback_task(void *params) {
 
   while (true) {
     if (this_kv->reply_abort_.exchange(false)) {
+      // What we are holding always goes: those bytes belong to the reply being abandoned.
       pending = 0;
       pending_offset = 0;
-      if (playing) {
+      // Stopping the speaker is a different matter. The abort is applied whenever this task next
+      // runs, and a newer reply may have started in between (the model answering an interruption
+      // immediately). Tearing the speaker down then lands mid-sample in THAT reply's audio, and a
+      // 16-bit stream restarted off a sample boundary is a hiss — which is what the room heard on
+      // 2026-08-25. An abort older than the current stream has nothing left to stop.
+      const bool aborting_current =
+          this_kv->reply_abort_generation_.load() == this_kv->reply_stream_generation_.load();
+      if (aborting_current && playing) {
         this_kv->announcement_speaker_->stop();
         playing = false;
         this_kv->reply_playing_.store(false);
