@@ -227,6 +227,15 @@ class KinetoVoice : public Component {
   std::atomic<uint32_t> reply_abort_generation_{0};
   /// Whether the playback task currently owns the announcement speaker.
   std::atomic<bool> reply_playing_{false};
+  /**
+   * millis() of the last mic frame that arrived while a reply was audible. The uplink mute reads
+   * it: frames are dropped while a reply plays and for a short tail after, because the room keeps
+   * ringing after the cone stops. The model must never hear this device's own voice — AEC removes
+   * the direct sound but a live room's late reflections leak past it, the server VAD reads them as
+   * speech, and one wake word becomes the model answering its own echo (prod, 2026-08-25). Wake
+   * words are unaffected: micro_wake_word reads the mic on its own path, so "Stop" still interrupts.
+   */
+  std::atomic<uint32_t> reply_last_audible_ms_{0};
   /// Bumped by every stream_start. The playback task clears the format only if nothing newer has
   /// started while it was draining — without this, a finish racing the NEXT stream's start wiped
   /// the format that start had just announced, and the new reply was dropped as formatless

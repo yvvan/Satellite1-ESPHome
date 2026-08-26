@@ -90,6 +90,9 @@ packages:
   timer: !include common/timer_no_ha.yaml
   led_ring: !include common/led_ring_no_ha.yaml
   kineto: !include common/kineto_voice.yaml
+  # Reset Reason + heap sensors: the network log cannot carry a panic backtrace (WiFi dies with
+  # the device), so the reset reason after reboot is the only crash forensics available off-USB.
+  debug: !include common/debug.yaml
 
 wifi:
   ssid: !secret wifi_ssid

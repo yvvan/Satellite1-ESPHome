@@ -42,6 +42,10 @@ static const uint32_t REPLY_PREBUFFER_MS = 300;
 // How long buffered audio may wait for its stream_start before it is dropped. Generous: the frame
 // is only ever a few milliseconds behind, and dropping is better than playing at a guessed rate.
 static const uint32_t FORMAT_WAIT_TIMEOUT_MS = 2000;
+// How long the uplink mute outlives the reply: the room keeps ringing after the cone stops, and
+// those reflections are exactly the echo the mute exists to keep away from the model. Short on
+// purpose — every extra millisecond eats the start of a user's immediate answer.
+static const uint32_t MIC_MUTE_TAIL_MS = 400;
 // How long to let the speaker finish stopping before announcing a new format. Bounded so a speaker
 // that never reports stopped costs the reply 100 ms rather than the whole turn.
 static const int SPEAKER_STOP_WAIT_STEPS = 10;
@@ -823,6 +827,19 @@ void KinetoVoice::abort_reply_stream_() {
 }
 
 void KinetoVoice::on_mic_data_(const std::vector<uint8_t> &data) {
+  // Half-duplex: while a reply is audible — playing, or within the room's ring after it — the
+  // mic's frames go nowhere. Not attenuated, DROPPED: any leak puts "is the echo above the VAD
+  // threshold" back in play, and that question is the self-talk loop. Interrupting stays possible
+  // through the wake words, which never ride this path.
+  const uint32_t now_ms = millis();
+  if (this->is_speaking()) {
+    this->reply_last_audible_ms_.store(now_ms);
+    return;
+  }
+  const uint32_t last_audible = this->reply_last_audible_ms_.load();
+  if (last_audible != 0 && now_ms - last_audible < MIC_MUTE_TAIL_MS)
+    return;
+
   const bool live = this->listening_.load() && this->ws_connected_.load();
   // The same ring serves both: a live utterance drains straight to the socket, an offline one stays
   // until there is a socket to drain it to. They cannot overlap — one needs a link and the other
